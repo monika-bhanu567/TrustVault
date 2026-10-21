@@ -1,32 +1,26 @@
 
 # Dependencies
 node_modules/
-**/node_modules/
 
-# Build output and test coverage
-dist/
-**/dist/
-coverage/
-
-# Environment variables and secrets
-.env
-.env.*
-!.env.example
-*.pem
-*.key
-
-# Private uploads and local data
-storage/
-blobs/
-data/
-*.sqlite
-*.db
-
-# Logs and operating system files
-*.log
-.DS_Store
-Thumbs.db
-
+# Environment secrets
 backend/.env
 backend/.env.*
 !backend/.env.example
+
+# Runtime document storage
+backend/storage/
+
+# Build output
+backend/dist/
+
+# Temporary and backup files
+*.bak
+*.tmp
+
+# Logs
+*.log
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
