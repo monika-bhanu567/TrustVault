@@ -16,10 +16,7 @@ const COOKIE_NAME = "trustvault_session";
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 export function buildApp(sessionStore?: SessionStore) {
-  const app = Fastify({
-    logger: false,
-    bodyLimit: MAX_FILE_BYTES + 1024 * 1024
-  });
+  const app = Fastify({ logger: true, bodyLimit: MAX_FILE_BYTES + 1024 * 1024 });
 
   const authService = new AuthService();
 

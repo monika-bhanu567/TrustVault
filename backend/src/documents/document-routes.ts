@@ -90,13 +90,10 @@ function validateStream(mimeType: string): Transform {
           chunk.subarray(0, Math.max(0, needed))
         ]);
 
-        const minimum = mimeType === "application/pdf"
-          ? 5
-          : mimeType === "image/png"
-            ? 8
-            : mimeType === "image/jpeg"
-              ? 3
-              : 1;
+        const minimum =
+          mimeType === "application/pdf" ? 5 :
+          mimeType === "image/png" ? 8 :
+          mimeType === "image/jpeg" ? 3 : 1;
 
         if (prefix.length >= minimum) {
           if (!hasValidSignature(mimeType, prefix)) {
@@ -142,7 +139,8 @@ export async function registerDocumentRoutes(
 
     try {
       part = await request.file();
-    } catch {
+    } catch (error) {
+      console.error("TRUSTVAULT MULTIPART ERROR:", error);
       return reply.code(400).send({ error: "Invalid upload" });
     }
 
@@ -153,9 +151,6 @@ export async function registerDocumentRoutes(
 
     const bridge = new PassThrough();
     const validator = validateStream(part.mimetype);
-
-    // Start the source pipeline before encryption so stream errors
-    // propagate and every original byte is preserved.
     const sourcePipeline = pipeline(part.file, validator, bridge);
 
     let encrypted;
@@ -173,6 +168,8 @@ export async function registerDocumentRoutes(
     } catch (error) {
       bridge.destroy();
 
+      console.error("TRUSTVAULT ENCRYPTION ERROR:", error);
+
       if (error instanceof Error && error.message === "FILE_TOO_LARGE") {
         return reply.code(413).send({ error: "File too large" });
       }
@@ -186,8 +183,7 @@ export async function registerDocumentRoutes(
         });
       }
 
-      request.log.error({ err: error }, "Document encryption failed");
-      return reply.code(400).send({ error: "Upload failed" });
+      return reply.code(500).send({ error: "Upload failed" });
     }
 
     try {
@@ -209,11 +205,18 @@ export async function registerDocumentRoutes(
         ]
       );
 
-      return reply.code(201).send({ document: result.rows[0] });
+      return reply.code(201).send({
+        document: result.rows[0]
+      });
     } catch (error) {
-      await storage.deleteEncryptedFile(encrypted.storageKey);
+      console.error("TRUSTVAULT DATABASE SAVE ERROR:", error);
 
-      request.log.error({ err: error }, "Document metadata save failed");
+      try {
+        await storage.deleteEncryptedFile(encrypted.storageKey);
+      } catch (cleanupError) {
+        console.error("TRUSTVAULT ENCRYPTED FILE CLEANUP ERROR:", cleanupError);
+      }
+
       return reply.code(500).send({ error: "Upload failed" });
     }
   });
@@ -278,7 +281,7 @@ export async function registerDocumentRoutes(
           document.content_sha256
         );
       } catch (error) {
-        request.log.error({ err: error }, "Document integrity check failed");
+        console.error("TRUSTVAULT DOCUMENT INTEGRITY ERROR:", error);
         return reply.code(500).send({ error: "Document unavailable" });
       }
 
@@ -293,8 +296,11 @@ export async function registerDocumentRoutes(
         .header("Pragma", "no-cache");
 
       const stream = createReadStream(temporaryPath);
+
       const cleanup = () => {
-        void rm(temporaryPath, { force: true });
+        void rm(temporaryPath, { force: true }).catch((error) => {
+          console.error("TRUSTVAULT TEMPORARY FILE CLEANUP ERROR:", error);
+        });
       };
 
       stream.once("close", cleanup);
