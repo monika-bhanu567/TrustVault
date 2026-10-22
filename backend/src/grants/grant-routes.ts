@@ -7,10 +7,6 @@ const COOKIE_NAME = "trustvault_session";
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-interface OwnedDocument {
-  id: string;
-}
-
 interface GrantRow {
   id: string;
   document_id: string;
@@ -27,7 +23,7 @@ export async function registerGrantRoutes(
   app: FastifyInstance,
   guard: AuthSessionGuard
 ): Promise<void> {
-  // Create a grant. Only the document owner may share it.
+  // Create or update the current grant. Only the document owner may share it.
   app.post<{
     Params: { id: string };
     Body: {
@@ -63,6 +59,12 @@ export async function registerGrantRoutes(
       return reply.code(400).send({ error: "Invalid grant request" });
     }
 
+    const normalizedEmail = body.email.trim().toLowerCase();
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return reply.code(400).send({ error: "Invalid email address" });
+    }
+
     const canRead = body.canRead ?? true;
     const canEdit = body.canEdit ?? false;
 
@@ -78,7 +80,7 @@ export async function registerGrantRoutes(
       expiresAt = new Date(body.expiresAt);
 
       if (
-        Number.isNaN(expiresAt.getTime()) ||
+        !Number.isFinite(expiresAt.getTime()) ||
         expiresAt.getTime() <= Date.now()
       ) {
         return reply.code(400).send({
@@ -87,45 +89,65 @@ export async function registerGrantRoutes(
       }
     }
 
-    const ownerResult = await pool.query<OwnedDocument>(
-      `SELECT id FROM documents
-       WHERE id = $1 AND owner_id = $2 AND status = 'ACTIVE'`,
-      [documentId, auth.user.id]
-    );
-
-    if (!ownerResult.rows[0]) {
-      return reply.code(404).send({ error: "Document not found" });
-    }
-
-    const normalizedEmail = body.email.trim().toLowerCase();
-
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-      return reply.code(400).send({ error: "Invalid email address" });
-    }
-
-    const targetResult = await pool.query<{ id: string }>(
-      `SELECT id FROM users
-       WHERE email = $1 AND is_active = TRUE`,
-      [normalizedEmail]
-    );
-
-    const target = targetResult.rows[0];
-
-    if (!target) {
-      return reply.code(404).send({ error: "User not found" });
-    }
-
-    if (target.id === auth.user.id) {
-      return reply.code(400).send({
-        error: "You already own this document"
-      });
-    }
+    const client = await pool.connect();
+    let transactionOpen = false;
 
     try {
-      const result = await pool.query<GrantRow>(
+      await client.query("BEGIN");
+      transactionOpen = true;
+
+      // Serialize grant changes for this document.
+      const document = await client.query(
+        `SELECT id
+         FROM documents
+         WHERE id = $1
+           AND owner_id = $2
+           AND status = 'ACTIVE'
+         FOR UPDATE`,
+        [documentId, auth.user.id]
+      );
+
+      if (!document.rows[0]) {
+        await client.query("ROLLBACK");
+        transactionOpen = false;
+        return reply.code(404).send({ error: "Document not found" });
+      }
+
+      const targetResult = await client.query<{ id: string }>(
+        `SELECT id
+         FROM users
+         WHERE email = $1 AND is_active = TRUE`,
+        [normalizedEmail]
+      );
+
+      const target = targetResult.rows[0];
+
+      if (!target) {
+        await client.query("ROLLBACK");
+        transactionOpen = false;
+        return reply.code(404).send({ error: "User not found" });
+      }
+
+      if (target.id === auth.user.id) {
+        await client.query("ROLLBACK");
+        transactionOpen = false;
+        return reply.code(400).send({
+          error: "You already own this document"
+        });
+      }
+
+      const result = await client.query<GrantRow>(
         `INSERT INTO document_grants
           (document_id, user_id, granted_by, can_read, can_edit, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (document_id, user_id)
+           WHERE revoked_at IS NULL
+         DO UPDATE SET
+           granted_by = EXCLUDED.granted_by,
+           can_read = EXCLUDED.can_read,
+           can_edit = EXCLUDED.can_edit,
+           created_at = NOW(),
+           expires_at = EXCLUDED.expires_at
          RETURNING id, document_id, user_id, can_read, can_edit,
                    created_at, expires_at, revoked_at,
                    ''::text AS email`,
@@ -139,23 +161,34 @@ export async function registerGrantRoutes(
         ]
       );
 
+      await client.query("COMMIT");
+      transactionOpen = false;
+
+      const grant = result.rows[0];
+
       return reply.code(201).send({
         grant: {
-          id: result.rows[0].id,
-          documentId,
-          userId: target.id,
-          canRead,
-          canEdit,
-          expiresAt
+          id: grant.id,
+          documentId: grant.document_id,
+          userId: grant.user_id,
+          canRead: grant.can_read,
+          canEdit: grant.can_edit,
+          expiresAt: grant.expires_at
         }
       });
     } catch (error) {
+      if (transactionOpen) {
+        await client.query("ROLLBACK").catch(() => {});
+      }
+
       request.log.error({ err: error }, "Failed to create document grant");
       return reply.code(500).send({ error: "Unable to create grant" });
+    } finally {
+      client.release();
     }
   });
 
-  // List grants. Only the document owner may inspect them.
+  // List grant history only for an active document owned by the caller.
   app.get<{ Params: { id: string } }>(
     "/documents/:id/grants",
     async (request, reply) => {
@@ -180,14 +213,19 @@ export async function registerGrantRoutes(
          JOIN documents d ON d.id = g.document_id
          WHERE g.document_id = $1
            AND d.owner_id = $2
-         ORDER BY g.created_at DESC`,
+           AND d.status = 'ACTIVE'
+         ORDER BY g.created_at DESC, g.id DESC`,
         [documentId, auth.user.id]
       );
 
+      // A valid owned document can have no grants.
       if (result.rows.length === 0) {
         const document = await pool.query(
-          `SELECT id FROM documents
-           WHERE id = $1 AND owner_id = $2 AND status = 'ACTIVE'`,
+          `SELECT id
+           FROM documents
+           WHERE id = $1
+             AND owner_id = $2
+             AND status = 'ACTIVE'`,
           [documentId, auth.user.id]
         );
 
@@ -215,7 +253,7 @@ export async function registerGrantRoutes(
     }
   );
 
-  // Revoke a grant. Only the document owner may revoke it.
+  // Revoke the current grant. Only the document owner may revoke it.
   app.delete<{
     Params: { id: string; grantId: string };
   }>("/documents/:id/grants/:grantId", async (request, reply) => {
