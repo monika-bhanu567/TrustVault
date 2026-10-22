@@ -1,5 +1,4 @@
-
-export type UserRole = "ADMIN" | "OWNER" | "VIEWER";
+﻿export type UserRole = "ADMIN" | "OWNER" | "VIEWER";
 
 export type DocumentAction = "READ" | "EDIT" | "SHARE";
 
@@ -20,6 +19,8 @@ export interface DocumentGrant {
   canRead: boolean;
   canEdit: boolean;
   isActive: boolean;
+  expiresAt?: Date | string | null;
+  revokedAt?: Date | string | null;
 }
 
 export interface AuthorizationRequest {
@@ -44,27 +45,20 @@ export class AuthorizationDecisionEngine {
     const { principal, document, action, grants } = request;
 
     if (!principal.isActive) {
-      return {
-        allowed: false,
-        reason: "USER_INACTIVE"
-      };
+      return { allowed: false, reason: "USER_INACTIVE" };
     }
 
-    // Administrative privileges do not automatically permit
-    // reading or editing document contents.
+    // Admin privileges never imply automatic access to document content.
     if (principal.role === "ADMIN") {
-      const adminGrant = grants.find(
-        (grant) =>
-          grant.documentId === document.id &&
-          grant.userId === principal.id &&
-          grant.isActive
+      const grant = grants.find(
+        (item) =>
+          item.documentId === document.id &&
+          item.userId === principal.id &&
+          this.isGrantActive(item)
       );
 
-      if (adminGrant && this.grantAllows(adminGrant, action)) {
-        return {
-          allowed: true,
-          reason: "ACTIVE_GRANT"
-        };
+      if (grant && this.grantAllows(grant, action)) {
+        return { allowed: true, reason: "ACTIVE_GRANT" };
       }
 
       return {
@@ -73,41 +67,39 @@ export class AuthorizationDecisionEngine {
       };
     }
 
-    // Owners can read and edit their own documents.
     if (principal.id === document.ownerId) {
-      if (action === "READ" || action === "EDIT") {
-        return {
-          allowed: true,
-          reason: "OWNER_ACCESS"
-        };
-      }
-
-      // Sharing is allowed only for the document owner.
       return {
         allowed: true,
         reason: "OWNER_ACCESS"
       };
     }
 
-    // Non-owners must have an active, document-specific grant.
     const grant = grants.find(
       (item) =>
         item.documentId === document.id &&
         item.userId === principal.id &&
-        item.isActive
+        this.isGrantActive(item)
     );
 
     if (grant && this.grantAllows(grant, action)) {
-      return {
-        allowed: true,
-        reason: "ACTIVE_GRANT"
-      };
+      return { allowed: true, reason: "ACTIVE_GRANT" };
     }
 
-    return {
-      allowed: false,
-      reason: "NO_PERMISSION"
-    };
+    return { allowed: false, reason: "NO_PERMISSION" };
+  }
+
+  private isGrantActive(grant: DocumentGrant): boolean {
+    if (!grant.isActive || grant.revokedAt != null) {
+      return false;
+    }
+
+    if (grant.expiresAt == null) {
+      return true;
+    }
+
+    const expiry = new Date(grant.expiresAt).getTime();
+
+    return Number.isFinite(expiry) && expiry > Date.now();
   }
 
   private grantAllows(
@@ -122,7 +114,7 @@ export class AuthorizationDecisionEngine {
       return grant.canEdit;
     }
 
-    // A viewer's grant never authorizes onward sharing.
+    // Only the document owner may share it.
     return false;
   }
 }

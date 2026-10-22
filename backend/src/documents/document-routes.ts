@@ -1,5 +1,4 @@
-
-import type { FastifyInstance } from "fastify";
+﻿import type { FastifyInstance } from "fastify";
 import { createReadStream } from "node:fs";
 import { rm } from "node:fs/promises";
 import path from "node:path";
@@ -8,6 +7,11 @@ import { pipeline } from "node:stream/promises";
 
 import { pool } from "../db/pool.js";
 import { AuthSessionGuard } from "../security/session-guard.js";
+import {
+  AuthorizationDecisionEngine,
+  type UserRole,
+  type DocumentGrant
+} from "../security/authorization.js";
 import { EncryptedStorage } from "../storage/encrypted-storage.js";
 
 const COOKIE_NAME = "trustvault_session";
@@ -20,6 +24,9 @@ const ALLOWED_TYPES = new Set([
   "text/plain"
 ]);
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 interface DocumentRow {
   id: string;
   original_name: string;
@@ -29,12 +36,30 @@ interface DocumentRow {
 }
 
 interface DownloadRow {
+  id: string;
+  owner_id: string;
   storage_key: string;
   original_name: string;
   encryption_iv: Buffer;
   encryption_tag: Buffer;
   content_sha256: string;
 }
+
+interface GrantRow {
+  document_id: string;
+  user_id: string;
+  can_read: boolean;
+  can_edit: boolean;
+  expires_at: Date | null;
+  revoked_at: Date | null;
+}
+
+interface UserRoleRow {
+  role: string;
+  is_active: boolean;
+}
+
+const authorization = new AuthorizationDecisionEngine();
 
 function safeFilename(name: string): string {
   return (
@@ -140,7 +165,7 @@ export async function registerDocumentRoutes(
     try {
       part = await request.file();
     } catch (error) {
-      console.error("TRUSTVAULT MULTIPART ERROR:", error);
+      request.log.warn({ err: error }, "Multipart upload rejected");
       return reply.code(400).send({ error: "Invalid upload" });
     }
 
@@ -167,8 +192,7 @@ export async function registerDocumentRoutes(
       ]);
     } catch (error) {
       bridge.destroy();
-
-      console.error("TRUSTVAULT ENCRYPTION ERROR:", error);
+      request.log.warn({ err: error }, "Document upload rejected");
 
       if (error instanceof Error && error.message === "FILE_TOO_LARGE") {
         return reply.code(413).send({ error: "File too large" });
@@ -209,12 +233,15 @@ export async function registerDocumentRoutes(
         document: result.rows[0]
       });
     } catch (error) {
-      console.error("TRUSTVAULT DATABASE SAVE ERROR:", error);
+      request.log.error({ err: error }, "Document database save failed");
 
       try {
         await storage.deleteEncryptedFile(encrypted.storageKey);
       } catch (cleanupError) {
-        console.error("TRUSTVAULT ENCRYPTED FILE CLEANUP ERROR:", cleanupError);
+        request.log.error(
+          { err: cleanupError },
+          "Encrypted file cleanup failed"
+        );
       }
 
       return reply.code(500).send({ error: "Upload failed" });
@@ -229,10 +256,18 @@ export async function registerDocumentRoutes(
     }
 
     const result = await pool.query<DocumentRow>(
-      `SELECT id, original_name, mime_type, size_bytes, created_at
-       FROM documents
-       WHERE owner_id = $1 AND status = 'ACTIVE'
-       ORDER BY created_at DESC`,
+      `SELECT DISTINCT d.id, d.original_name, d.mime_type,
+              d.size_bytes, d.created_at
+       FROM documents d
+       LEFT JOIN document_grants g
+         ON g.document_id = d.id
+        AND g.user_id = $1
+        AND g.can_read = TRUE
+        AND g.revoked_at IS NULL
+        AND (g.expires_at IS NULL OR g.expires_at > NOW())
+       WHERE d.status = 'ACTIVE'
+         AND (d.owner_id = $1 OR g.id IS NOT NULL)
+       ORDER BY d.created_at DESC`,
       [auth.user.id]
     );
 
@@ -248,26 +283,79 @@ export async function registerDocumentRoutes(
         return reply.code(401).send({ error: "Unauthorized" });
       }
 
-      if (
-        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-          request.params.id
-        )
-      ) {
+      const documentId = request.params.id;
+
+      if (!UUID_PATTERN.test(documentId)) {
         return reply.code(404).send({ error: "Document not found" });
       }
 
       const result = await pool.query<DownloadRow>(
-        `SELECT storage_key, original_name,
+        `SELECT id, owner_id, storage_key, original_name,
                 encryption_iv, encryption_tag, content_sha256
          FROM documents
-         WHERE id = $1 AND owner_id = $2 AND status = 'ACTIVE'
+         WHERE id = $1 AND status = 'ACTIVE'
          LIMIT 1`,
-        [request.params.id, auth.user.id]
+        [documentId]
       );
 
       const document = result.rows[0];
 
       if (!document) {
+        return reply.code(404).send({ error: "Document not found" });
+      }
+
+      const userResult = await pool.query<UserRoleRow>(
+        `SELECT role, is_active
+         FROM users
+         WHERE id = $1
+         LIMIT 1`,
+        [auth.user.id]
+      );
+
+      const currentUser = userResult.rows[0];
+
+      if (
+        !currentUser ||
+        !currentUser.is_active ||
+        !["ADMIN", "OWNER", "VIEWER"].includes(currentUser.role)
+      ) {
+        return reply.code(404).send({ error: "Document not found" });
+      }
+
+      const grantResult = await pool.query<GrantRow>(
+        `SELECT document_id, user_id, can_read, can_edit,
+                expires_at, revoked_at
+         FROM document_grants
+         WHERE document_id = $1 AND user_id = $2
+         ORDER BY created_at DESC`,
+        [documentId, auth.user.id]
+      );
+
+      const grants: DocumentGrant[] = grantResult.rows.map((grant) => ({
+        documentId: grant.document_id,
+        userId: grant.user_id,
+        canRead: grant.can_read,
+        canEdit: grant.can_edit,
+        isActive: grant.revoked_at === null,
+        expiresAt: grant.expires_at,
+        revokedAt: grant.revoked_at
+      }));
+
+      const decision = authorization.decide({
+        principal: {
+          id: auth.user.id,
+          role: currentUser.role as UserRole,
+          isActive: currentUser.is_active
+        },
+        document: {
+          id: document.id,
+          ownerId: document.owner_id
+        },
+        action: "READ",
+        grants
+      });
+
+      if (!decision.allowed) {
         return reply.code(404).send({ error: "Document not found" });
       }
 
@@ -281,7 +369,7 @@ export async function registerDocumentRoutes(
           document.content_sha256
         );
       } catch (error) {
-        console.error("TRUSTVAULT DOCUMENT INTEGRITY ERROR:", error);
+        request.log.error({ err: error }, "Document integrity check failed");
         return reply.code(500).send({ error: "Document unavailable" });
       }
 
@@ -299,7 +387,7 @@ export async function registerDocumentRoutes(
 
       const cleanup = () => {
         void rm(temporaryPath, { force: true }).catch((error) => {
-          console.error("TRUSTVAULT TEMPORARY FILE CLEANUP ERROR:", error);
+          request.log.error({ err: error }, "Temporary file cleanup failed");
         });
       };
 
