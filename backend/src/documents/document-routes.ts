@@ -1,4 +1,6 @@
-﻿import type { FastifyInstance } from "fastify";
+﻿
+import type { FastifyInstance } from "fastify";
+import type { PoolClient } from "pg";
 import { createReadStream } from "node:fs";
 import { rm } from "node:fs/promises";
 import path from "node:path";
@@ -13,6 +15,7 @@ import {
   type DocumentGrant
 } from "../security/authorization.js";
 import { EncryptedStorage } from "../storage/encrypted-storage.js";
+import { appendAuditEventWithClient } from "../audit/postgres-audit-service.js";
 
 const COOKIE_NAME = "trustvault_session";
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -210,8 +213,16 @@ export async function registerDocumentRoutes(
       return reply.code(500).send({ error: "Upload failed" });
     }
 
+    let client: PoolClient | undefined;
+    let transactionOpen = false;
+
     try {
-      const result = await pool.query<DocumentRow>(
+      client = await pool.connect();
+
+      await client.query("BEGIN");
+      transactionOpen = true;
+
+      const result = await client.query<DocumentRow>(
         `INSERT INTO documents
           (owner_id, storage_key, original_name, mime_type,
            size_bytes, encryption_iv, encryption_tag, content_sha256)
@@ -229,12 +240,39 @@ export async function registerDocumentRoutes(
         ]
       );
 
+      const document = result.rows[0];
+
+      // Keep the audit event and document record in the same transaction.
+      // Do not log filenames, document contents, or encryption secrets.
+      await appendAuditEventWithClient(client, {
+        eventType: "DOCUMENT_UPLOADED",
+        actorId: auth.user.id,
+        entityType: "document",
+        entityId: document.id,
+        metadata: {
+          mimeType: document.mime_type,
+          sizeBytes: document.size_bytes
+        }
+      });
+
+      await client.query("COMMIT");
+      transactionOpen = false;
+
       return reply.code(201).send({
-        document: result.rows[0]
+        document
       });
     } catch (error) {
-      request.log.error({ err: error }, "Document database save failed");
+      if (client && transactionOpen) {
+        await client.query("ROLLBACK").catch(() => {});
+      }
 
+      request.log.error(
+        { err: error },
+        "Document database save or audit failed"
+      );
+
+      // The encrypted file was created before the database transaction.
+      // Remove it if either the document insert or audit write fails.
       try {
         await storage.deleteEncryptedFile(encrypted.storageKey);
       } catch (cleanupError) {
@@ -245,6 +283,8 @@ export async function registerDocumentRoutes(
       }
 
       return reply.code(500).send({ error: "Upload failed" });
+    } finally {
+      client?.release();
     }
   });
 

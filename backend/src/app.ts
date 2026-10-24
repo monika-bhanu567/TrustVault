@@ -1,16 +1,19 @@
-﻿import Fastify from "fastify";
+﻿
+import Fastify from "fastify";
 import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
 
 import {
   AuthSessionGuard,
-  type SessionStore
+  type SessionStore,
 } from "./security/session-guard.js";
 
 import { AuthService } from "./auth/auth-service.js";
+import { pool } from "./db/pool.js";
 import { EncryptedStorage } from "./storage/encrypted-storage.js";
 import { registerDocumentRoutes } from "./documents/document-routes.js";
 import { registerGrantRoutes } from "./grants/grant-routes.js";
+import { PostgresAuditService } from "./audit/postgres-audit-service.js";
 
 const COOKIE_NAME = "trustvault_session";
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -18,10 +21,11 @@ const MAX_FILE_BYTES = 10 * 1024 * 1024;
 export function buildApp(sessionStore?: SessionStore) {
   const app = Fastify({
     logger: true,
-    bodyLimit: MAX_FILE_BYTES + 1024 * 1024
+    bodyLimit: MAX_FILE_BYTES + 1024 * 1024,
   });
 
   const authService = new AuthService();
+  const auditService = new PostgresAuditService();
 
   app.register(cookie);
 
@@ -29,13 +33,13 @@ export function buildApp(sessionStore?: SessionStore) {
     limits: {
       fileSize: MAX_FILE_BYTES,
       files: 1,
-      fields: 0
-    }
+      fields: 0,
+    },
   });
 
   app.get("/health", async () => ({
     status: "ok",
-    service: "trustvault-api"
+    service: "trustvault-api",
   }));
 
   app.post<{
@@ -56,7 +60,7 @@ export function buildApp(sessionStore?: SessionStore) {
         ["INVALID_EMAIL", "INVALID_PASSWORD"].includes(error.message)
       ) {
         return reply.code(400).send({
-          error: "Invalid email or password"
+          error: "Invalid email or password",
         });
       }
 
@@ -65,7 +69,7 @@ export function buildApp(sessionStore?: SessionStore) {
         error.message === "EMAIL_ALREADY_REGISTERED"
       ) {
         return reply.code(409).send({
-          error: "Unable to register this account"
+          error: "Unable to register this account",
         });
       }
 
@@ -92,7 +96,7 @@ export function buildApp(sessionStore?: SessionStore) {
           secure: process.env.NODE_ENV === "production",
           sameSite: "strict",
           path: "/",
-          expires: result.expiresAt
+          expires: result.expiresAt,
         })
         .send({ user: result.user });
     } catch (error) {
@@ -101,7 +105,7 @@ export function buildApp(sessionStore?: SessionStore) {
         error.message === "INVALID_CREDENTIALS"
       ) {
         return reply.code(401).send({
-          error: "Invalid email or password"
+          error: "Invalid email or password",
         });
       }
 
@@ -119,7 +123,7 @@ export function buildApp(sessionStore?: SessionStore) {
           httpOnly: true,
           secure: process.env.NODE_ENV === "production",
           sameSite: "strict",
-          path: "/"
+          path: "/",
         })
         .code(204)
         .send();
@@ -134,7 +138,7 @@ export function buildApp(sessionStore?: SessionStore) {
 
     app.get("/session/check", async (request, reply) => {
       const result = await guard.validate(
-        request.cookies[COOKIE_NAME]
+        request.cookies[COOKIE_NAME],
       );
 
       if (!result.valid) {
@@ -143,8 +147,124 @@ export function buildApp(sessionStore?: SessionStore) {
 
       return {
         authenticated: true,
-        userId: result.user.id
+        userId: result.user.id,
       };
+    });
+
+    app.get("/auth/me", async (request, reply) => {
+      const result = await guard.validate(
+        request.cookies[COOKIE_NAME],
+      );
+
+      if (!result.valid) {
+        return reply.code(401).send({ error: "Unauthorized" });
+      }
+
+      const userResult = await pool.query<{
+        id: string;
+        email: string;
+        role: string;
+      }>(
+        `SELECT id, email, role
+         FROM users
+         WHERE id = $1 AND is_active = TRUE
+         LIMIT 1`,
+        [result.user.id],
+      );
+
+      const user = userResult.rows[0];
+
+      if (!user) {
+        return reply.code(401).send({ error: "Unauthorized" });
+      }
+
+      return { user };
+    });
+
+    // Return recent audit events without exposing signatures or secrets.
+    app.get<{
+      Querystring: { limit?: string };
+    }>("/audit", async (request, reply) => {
+      const auth = await guard.validate(
+        request.cookies[COOKIE_NAME],
+      );
+
+      if (!auth.valid) {
+        return reply.code(401).send({ error: "Unauthorized" });
+      }
+
+      const requestedLimit = Number(request.query.limit ?? 50);
+
+      if (
+        !Number.isInteger(requestedLimit) ||
+        requestedLimit < 1 ||
+        requestedLimit > 100
+      ) {
+        return reply.code(400).send({
+          error: "Limit must be between 1 and 100",
+        });
+      }
+
+      try {
+        const result = await pool.query<{
+          id: string;
+          event_type: string;
+          entity_type: string;
+          created_at: Date | string;
+          metadata: Record<string, unknown>;
+        }>(
+          `SELECT id::text, event_type, entity_type,
+                  created_at, metadata
+           FROM audit_events
+           ORDER BY id DESC
+           LIMIT $1`,
+          [requestedLimit],
+        );
+
+        return {
+          events: result.rows.map((event) => ({
+            id: event.id,
+            eventType: event.event_type,
+            entityType: event.entity_type,
+            createdAt: new Date(event.created_at).toISOString(),
+            metadata: event.metadata,
+          })),
+        };
+      } catch (error) {
+        request.log.error({ err: error }, "Failed to load audit events");
+        return reply.code(500).send({
+          error: "Unable to load audit events",
+        });
+      }
+    });
+
+    // Verify the integrity of the complete audit chain.
+    app.get("/audit/verify", async (request, reply) => {
+      const auth = await guard.validate(
+        request.cookies[COOKIE_NAME],
+      );
+
+      if (!auth.valid) {
+        return reply.code(401).send({ error: "Unauthorized" });
+      }
+
+      try {
+        const result = await auditService.verify();
+
+        return {
+          valid: result.valid,
+          checkedEvents: result.checkedEvents,
+          ...(result.invalidEventId
+            ? { invalidEventId: result.invalidEventId }
+            : {}),
+          ...(result.reason ? { reason: result.reason } : {}),
+        };
+      } catch (error) {
+        request.log.error({ err: error }, "Audit verification failed");
+        return reply.code(500).send({
+          error: "Unable to verify audit chain",
+        });
+      }
     });
 
     app.register(async (protectedApp) => {

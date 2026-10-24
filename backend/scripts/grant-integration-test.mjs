@@ -1,6 +1,14 @@
 ﻿import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+process.env.DB_NAME = "trustvault_test";
+const storageDir = await mkdtemp(path.join(tmpdir(), "trustvault-grants-"));
+process.env.VAULT_STORAGE_DIR = storageDir;
+process.env.VAULT_ENCRYPTION_KEY = "cd".repeat(32);
 
 const { buildApp } = await import("../dist/app.js");
 const { PostgresSessionStore } = await import("../dist/db/postgres-session-store.js");
@@ -34,6 +42,12 @@ function assert(condition, message) {
 
 async function main() {
   try {
+    const dbCheck = await pool.query("SELECT current_database() AS name");
+    if (dbCheck.rows[0].name !== "trustvault_test") {
+      throw new Error("Safety check failed: refusing to run against a non-test database.");
+    }
+    console.log("Database:", dbCheck.rows[0].name);
+
     const owner = await auth.register(ownerEmail, password);
     ownerId = owner.id;
 
@@ -322,14 +336,14 @@ async function main() {
 
     if (userIds.length) {
       await pool.query(
-        "DELETE FROM sessions WHERE user_id = ANY($1::uuid[])",
+        "UPDATE sessions SET revoked_at = NOW() WHERE user_id = ANY($1::uuid[]) AND revoked_at IS NULL",
         [userIds]
-      ).catch(() => {});
+      ).catch((error) => console.error("Warning: session cleanup failed:", error.message));
 
       await pool.query(
-        "DELETE FROM users WHERE id = ANY($1::uuid[])",
+        "UPDATE users SET is_active = FALSE WHERE id = ANY($1::uuid[])",
         [userIds]
-      ).catch(() => {});
+      ).catch((error) => console.error("Warning: test account deactivation failed:", error.message));
     }
 
     if (storageKey) {
@@ -337,6 +351,7 @@ async function main() {
     }
 
     await pool.end();
+    await rm(storageDir, { recursive: true, force: true });
   }
 }
 
