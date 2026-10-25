@@ -133,4 +133,30 @@ describe("TrustVault API", () => {
       else process.env.NODE_ENV = originalNodeEnv;
     }
   });
+
+  it("refuses production readiness without private cloud storage credentials", async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalUrl = process.env.SUPABASE_URL;
+    const originalKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const originalBucket = process.env.SUPABASE_STORAGE_BUCKET;
+    process.env.NODE_ENV = "production";
+    delete process.env.SUPABASE_URL;
+    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    delete process.env.SUPABASE_STORAGE_BUCKET;
+    try {
+      app = buildApp();
+      const response = await app.inject({ method: "GET", url: "/ready" });
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toEqual({ status: "not_ready" });
+    } finally {
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+      if (originalUrl === undefined) delete process.env.SUPABASE_URL;
+      else process.env.SUPABASE_URL = originalUrl;
+      if (originalKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+      else process.env.SUPABASE_SERVICE_ROLE_KEY = originalKey;
+      if (originalBucket === undefined) delete process.env.SUPABASE_STORAGE_BUCKET;
+      else process.env.SUPABASE_STORAGE_BUCKET = originalBucket;
+    }
+  });
 });

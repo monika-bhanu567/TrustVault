@@ -78,6 +78,17 @@ export function buildApp(sessionStore?: SessionStore) {
       return reply.code(503).send({ status: "not_ready" });
     }
 
+    // Production must use persistent, private object storage. Local
+    // development deliberately retains encrypted filesystem storage.
+    if (
+      process.env.NODE_ENV === "production" &&
+      (!process.env.SUPABASE_URL ||
+        !process.env.SUPABASE_SERVICE_ROLE_KEY ||
+        !process.env.SUPABASE_STORAGE_BUCKET)
+    ) {
+      return reply.code(503).send({ status: "not_ready" });
+    }
+
     try {
       await pool.query("SELECT 1");
       return { status: "ready" };

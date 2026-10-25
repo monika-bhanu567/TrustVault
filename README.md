@@ -13,7 +13,7 @@ TrustVault is an encrypted, zero-trust document-sharing application. The server 
 1. Install Node.js 20+ and PostgreSQL.
 2. In `backend`, copy `.env.example` to `.env` and configure database credentials, `VAULT_ENCRYPTION_KEY` (64 hexadecimal characters), and `AUDIT_HMAC_KEY` (at least 32 characters).
 3. Create the configured PostgreSQL database.
-4. Apply `backend/migrations/001_initial_schema.sql` through `005_audit_events.sql` in numeric order. Use the migration scripts in `backend/scripts/` where supplied; never replay migrations blindly against production.
+4. Apply `backend/migrations/001_initial_schema.sql` through `007_audit_chain_epochs.sql` in numeric order. Use the migration scripts in `backend/scripts/` where supplied; never replay migrations blindly against production.
 5. Run `npm install` in `backend` and `frontend`.
 6. Start the backend with `npm run dev` from `backend`, then the frontend with `npm run dev` from `frontend`.
 7. Open `http://localhost:5173`.
@@ -39,6 +39,18 @@ See [API.md](API.md), [THREATS.md](THREATS.md), and [PROMPTS.md](PROMPTS.md) for
 
 For architecture, recording a five-minute demo, and final deployment handoff, see [TECHNICAL_WRITEUP.md](TECHNICAL_WRITEUP.md), [DEMO.md](DEMO.md), and [SUBMISSION_CHECKLIST.md](SUBMISSION_CHECKLIST.md).
 
+## Controlled demo accounts
+
+The configured database contains the following controlled accounts for local/staging demonstration only:
+
+| Role | Email | Password |
+| --- | --- | --- |
+| Administrator | `demo-admin@trustvault.local` | `TrustVaultDemo!2026#Review` |
+| Owner | `demo-owner@trustvault.local` | `TrustVaultDemo!2026#Review` |
+| Viewer | `demo-viewer@trustvault.local` | `TrustVaultDemo!2026#Review` |
+
+These are intentionally public demonstration credentials, not production-user accounts. Rotate or replace the shared password before any broader deployment.
+
 ## Deliberate scope limits
 
-This repository includes Docker/Render and Vercel deployment configuration, but no public deployment, production secret-manager configuration, externally provisioned demo credentials, or recorded five-minute video yet. Categories and authorized search filters are implemented. Version recovery remains intentionally out of scope; the supported change workflow is a validated, authorized document replacement.
+This repository includes Docker/Render and Vercel deployment configuration, but no public deployment, production secret-manager configuration, or recorded five-minute video yet. Categories and authorized search filters are implemented. Version recovery remains intentionally out of scope; the supported change workflow is a validated, authorized document replacement.
