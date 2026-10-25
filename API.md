@@ -13,4 +13,5 @@ All protected endpoints require the `trustvault_session` HTTP-only session cooki
 | `GET /documents/:id/grants` | Active owner only | Shows access history for the caller's document. |
 | `DELETE /documents/:id/grants/:grantId` | Active owner only | Immediately revokes the named grant. |
 | `GET /shared-with-me` | Authenticated recipient | Lists only current, active grants. |
-| `GET /audit`, `GET /audit/verify` | Authenticated user | Current prototype audit view; see the scope limitation in `THREATS.md`. |
+| `GET /audit` | Authenticated user | Administrators see the global trail. Others see only their own activity and events belonging to documents they own. |
+| `GET /audit/verify` | Authenticated user | Returns integrity status only; it does not reveal hidden event contents. |

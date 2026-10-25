@@ -193,6 +193,12 @@ export function buildApp(sessionStore?: SessionStore) {
         return reply.code(401).send({ error: "Unauthorized" });
       }
 
+      const roleResult = await pool.query<{ role: string }>(
+        `SELECT role FROM users WHERE id = $1 AND is_active = TRUE LIMIT 1`,
+        [auth.user.id],
+      );
+      const isAdmin = roleResult.rows[0]?.role === "ADMIN";
+
       const requestedLimit = Number(request.query.limit ?? 50);
 
       if (
@@ -216,9 +222,22 @@ export function buildApp(sessionStore?: SessionStore) {
           `SELECT id::text, event_type, entity_type,
                   created_at, metadata
            FROM audit_events
+           WHERE $2::boolean
+              OR actor_id = $1
+              OR (
+                entity_type = 'document'
+                AND entity_id IN (
+                  SELECT id::text FROM documents WHERE owner_id = $1
+                )
+              )
+              OR (
+                metadata ->> 'documentId' IN (
+                  SELECT id::text FROM documents WHERE owner_id = $1
+                )
+              )
            ORDER BY id DESC
-           LIMIT $1`,
-          [requestedLimit],
+           LIMIT $3`,
+          [auth.user.id, isAdmin, requestedLimit],
         );
 
         return {
