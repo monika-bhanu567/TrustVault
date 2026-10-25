@@ -495,6 +495,15 @@ function App() {
   
     async function handleRevoke(grantId: string) {
     if (!sharingDocumentId) return;
+    const grant = grants.find((item) => item.id === grantId);
+
+    if (
+      !window.confirm(
+        `Revoke ${grant?.email ?? "this recipient"}'s access immediately?`,
+      )
+    ) {
+      return;
+    }
 
     setBusy(true);
     showMessage("");
@@ -505,7 +514,16 @@ function App() {
         { method: "DELETE" }
       );
 
-      await loadGrants(sharingDocumentId);
+      // Reflect the security change immediately. The server remains authoritative;
+      // refresh afterwards to reconcile the complete grant history.
+      setGrants((current) =>
+        current.map((item) =>
+          item.id === grantId
+            ? { ...item, active: false, revokedAt: new Date().toISOString() }
+            : item,
+        ),
+      );
+      void loadGrants(sharingDocumentId);
       showMessage("Document access revoked successfully.");
     } catch (error) {
       showMessage(
