@@ -1,0 +1,25 @@
+.tv-logo { --tv-mocha: #5b3d2d; --tv-silver: #d9d8dc; --tv-lavender: #ddd3ed; display: inline-flex; align-items: center; gap: .58rem; color: var(--tv-mocha); line-height: 1; text-decoration: none; transform-origin: left center; }
+.tv-logo__mark { display: block; width: 2.75rem; height: 2.75rem; overflow: visible; filter: drop-shadow(0 8px 12px rgba(77, 49, 34, .17)); }
+.tv-logo__wordmark { font-family: "Manrope", sans-serif; font-size: 1.25rem; font-weight: 800; letter-spacing: -1.05px; color: #34271f; }
+.tv-logo__wordmark > span { color: #76513a; }
+.tv-logo--compact { gap: 0; }
+.tv-logo--compact .tv-logo__mark { width: 2.2rem; height: 2.2rem; }
+.tv-logo__halo { fill: none; stroke: rgba(220, 211, 237, .96); stroke-width: 1.2; stroke-dasharray: 4 7; opacity: .15; }
+.tv-logo__shield { stroke: var(--tv-silver); stroke-width: 1.4; }
+.tv-logo__document { fill: rgba(255,255,255,.95); stroke: #dedde0; stroke-width: 1; }
+.tv-logo__fold,.tv-logo__line { fill: none; stroke: #9a9092; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.2; }
+.tv-logo__lock { fill: none; stroke: #e2e0e4; stroke-width: 1.8; stroke-linecap: round; }
+.tv-logo__lock-body { fill: #dcd2ec; }
+.tv-logo__check { fill: none; stroke: #5a3d2d; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.45; }
+.tv-logo__accent { fill: #dfd4ee; stroke: #fdfcff; stroke-width: 1.1; }
+.tv-logo__shimmer { fill: var(--tv-silver); opacity: .28; transform: translateX(-47px) rotate(0deg); }
+.tv-logo--animated { animation: tv-logo-enter .72s cubic-bezier(.2,.8,.2,1) both; }
+.tv-logo--animated .tv-logo__halo { animation: tv-logo-pulse 4.8s ease-in-out infinite; transform-origin: 32px 32px; }
+.tv-logo--animated .tv-logo__shimmer { animation: tv-logo-shimmer 7s ease-in-out 1.2s infinite; }
+.tv-logo--animated .tv-logo__accent { animation: tv-logo-accent 3.8s ease-in-out infinite; }
+.tv-logo--animated:hover { transform: scale(1.035); filter: drop-shadow(0 7px 11px rgba(117, 81, 58, .15)); transition: transform .22s ease, filter .22s ease; }
+@keyframes tv-logo-enter { from { opacity: 0; transform: translateY(-7px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes tv-logo-pulse { 0%,100% { opacity:.15; stroke-width:1.2; } 50% { opacity:.86; stroke-width:1.65; } }
+@keyframes tv-logo-shimmer { 0%,68%,100% { transform: translateX(-47px); opacity:0; } 73% { opacity:.4; } 86% { transform: translateX(56px); opacity:.1; } }
+@keyframes tv-logo-accent { 0%,100% { opacity:.3; transform:scale(.72); } 48% { opacity:1; transform:scale(1); } }
+@media (prefers-reduced-motion: reduce) { .tv-logo, .tv-logo * { animation: none !important; transition: none !important; } .tv-logo--animated { opacity:1; transform:none; } }

@@ -101,9 +101,9 @@ button:not(:disabled) {
 /* Public landing page */
 .landing-page { min-height: 100vh; overflow: hidden; background: #fbfaf8; color: var(--brown-deep); }
 .landing-nav { height: 82px; max-width: 1240px; margin: 0 auto; padding: 0 28px; display: flex; align-items: center; justify-content: space-between; gap: 28px; }
-.landing-brand { display: inline-flex; align-items: center; gap: 10px; color: var(--brown-deep); font-family: "Manrope", sans-serif; font-size: 22px; font-weight: 800; text-decoration: none; letter-spacing: -1px; }
-.landing-brand .brand-mark { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 12px; color: #fff; background: linear-gradient(145deg, var(--brown), var(--brown-deep)); box-shadow: 0 8px 18px rgba(81,55,36,.2); }
-.landing-brand span span { color: var(--brown); }
+.landing-brand { display: inline-flex; align-items: center; color: var(--brown-deep); text-decoration: none; }
+.landing-brand .tv-logo__mark { width: 2.5rem; height: 2.5rem; }
+.landing-brand .tv-logo__wordmark { font-size: 1.38rem; }
 .landing-nav nav { display: flex; gap: 28px; }
 .landing-nav nav a, .footer-links a, .footer-links button { color: #75695f; font-size: 13px; font-weight: 700; text-decoration: none; background: none; border: 0; padding: 4px; }
 .landing-nav nav a:hover, .footer-links a:hover, .footer-links button:hover { color: var(--brown-dark); }
@@ -194,6 +194,10 @@ button:not(:disabled) {
   font-weight: 700;
   letter-spacing: 1.45px;
 }
+
+.brand > .tv-logo--compact { flex: 0 0 43px; }
+.brand > .tv-logo--compact .tv-logo__mark { width: 43px; height: 43px; }
+.auth-brand > .tv-logo--compact .tv-logo__mark { width: 43px; height: 43px; }
 
 /* Sidebar */
 

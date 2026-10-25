@@ -30,6 +30,7 @@ import {
   X,
 } from "lucide-react";
 import "./App.css";
+import { TrustVaultLogo } from "./components/TrustVaultLogo";
 
 type User = {
   id: string;
@@ -635,10 +636,7 @@ function App() {
     return (
       <main className="landing-page">
         <header className="landing-nav">
-          <a className="landing-brand" href="#top" aria-label="TrustVault home">
-            <span className="brand-mark"><ShieldCheck size={22} /></span>
-            <span>TrustVault<span>.</span></span>
-          </a>
+          <a className="landing-brand" href="#top"><TrustVaultLogo /></a>
           <nav aria-label="Main navigation">
             <a href="#features">Features</a>
             <a href="#security">Security</a>
@@ -719,9 +717,7 @@ function App() {
 
         <section className="auth-card landing-auth" id="get-started">
           <div className="auth-brand">
-            <div className="brand-mark">
-              <ShieldCheck size={26} />
-            </div>
+            <TrustVaultLogo compact />
             <div>
               <div className="brand-name">
                 TrustVault<span>.</span>
@@ -820,7 +816,7 @@ function App() {
           A calmer, safer place for what matters.
         </div>
         <footer className="landing-footer">
-          <div><div className="landing-brand"><span className="brand-mark"><ShieldCheck size={19} /></span><span>TrustVault<span>.</span></span></div><p>The explainable zero-trust document vault.</p></div>
+          <div><div className="landing-brand"><TrustVaultLogo /></div><p>The explainable zero-trust document vault.</p></div>
           <div className="footer-links"><a href="#features">Features</a><a href="#security">Security</a><a href="#how-it-works">How It Works</a><button onClick={() => { setAuthMode("login"); document.getElementById("get-started")?.scrollIntoView({ behavior: "smooth" }); }}>Sign In</button></div>
           <small>© {new Date().getFullYear()} TrustVault · Privacy by design</small>
         </footer>
@@ -855,9 +851,7 @@ function App() {
             setMobileSidebar(false);
           }}
         >
-          <span className="brand-mark">
-            <ShieldCheck size={24} />
-          </span>
+          <TrustVaultLogo compact />
           <span className="brand-name">
             TrustVault<span>.</span>
             <small>PRIVATE DOCUMENT SPACE</small>
