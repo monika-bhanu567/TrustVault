@@ -16,6 +16,15 @@ backend/dist/
 # Temporary and backup files
 *.bak
 *.tmp
+backend/trustvault-data-backup.json
+backend/local-schema.txt
+backend/supabase-schema.txt
+backend/check-recipient.ts
+backend/check-shared-with-me.ts
+backend/scripts/inspect-*-audit-chain.mjs
+backend/scripts/verify-test-audit-chain.mjs
+backend/scripts/check-test-audit-triggers.mjs
+/App.tsx
 
 # Logs
 *.log

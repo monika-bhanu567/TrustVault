@@ -37,6 +37,8 @@ The backend listens on port 3000. Vite proxies `/api` to it; confirm the proxy c
 
 See [API.md](API.md), [THREATS.md](THREATS.md), and [PROMPTS.md](PROMPTS.md) for endpoint access, threat analysis, and AI-work evidence.
 
+For architecture, recording a five-minute demo, and final deployment handoff, see [TECHNICAL_WRITEUP.md](TECHNICAL_WRITEUP.md), [DEMO.md](DEMO.md), and [SUBMISSION_CHECKLIST.md](SUBMISSION_CHECKLIST.md).
+
 ## Deliberate scope limits
 
-This local repository does not include a public hosting configuration, a production secret manager, externally provisioned demo credentials, or a five-minute demo video. It also does not yet offer categories/date/owner filtering or a version-recovery experience. These are explicitly retained as release work rather than represented as completed functionality.
+This repository includes Docker/Render and Vercel deployment configuration, but no public deployment, production secret-manager configuration, externally provisioned demo credentials, or recorded five-minute video yet. Categories and authorized search filters are implemented. Version recovery remains intentionally out of scope; the supported change workflow is a validated, authorized document replacement.
