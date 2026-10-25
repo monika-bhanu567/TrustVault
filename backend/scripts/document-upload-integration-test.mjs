@@ -34,7 +34,14 @@ async function main() {
   const documentIds = [];
   let passed = 0;
 
-  process.env.DB_NAME = "trustvault_test";
+  if (process.env.DATABASE_URL) {
+    if (!process.env.TEST_DATABASE_URL) {
+      throw new Error("Set TEST_DATABASE_URL to an isolated trustvault_test database before running this integration test.");
+    }
+    process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
+  } else {
+    process.env.DB_NAME = "trustvault_test";
+  }
   storageDir = await mkdtemp(path.join(tmpdir(), "trustvault-integration-"));
   process.env.VAULT_STORAGE_DIR = storageDir;
   process.env.VAULT_ENCRYPTION_KEY = "ab".repeat(32);

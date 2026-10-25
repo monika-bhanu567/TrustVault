@@ -17,7 +17,7 @@ TrustVault is an encrypted document-sharing service with per-document ownership 
 - Stored metadata includes random storage key, IV, authentication tag, size, and SHA-256 plaintext hash.
 - Download decryption verifies authenticated encryption and SHA-256 before streaming a protected temporary file.
 - The authorization engine centralizes `READ`, `EDIT`, and `SHARE` decisions.
-- Audit events are append-only at database level and HMAC-chain linked. Significant actions—including permitted downloads, writes, deletes, grant changes, revocations, and denied access—are recorded without document contents or secrets.
+- Audit events are append-only at database level and HMAC-chain linked. Significant actions—including permitted downloads, writes, deletes, grant changes, revocations, and denied access—are recorded without document contents or secrets. The active epoch is verified independently; a preserved legacy segment is explicitly reported as unverifiable because its original key was unavailable, rather than being silently rewritten.
 - Cross-origin production requests are restricted to `FRONTEND_ORIGIN`; cookies are HTTP-only, Secure in production, and use `SameSite=None` only for the configured cross-site frontend deployment.
 
 ## Cloud design

@@ -5,7 +5,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-process.env.DB_NAME = "trustvault_test";
+if (process.env.DATABASE_URL) {
+  if (!process.env.TEST_DATABASE_URL) {
+    throw new Error("Set TEST_DATABASE_URL to an isolated trustvault_test database before running this integration test.");
+  }
+  process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
+} else {
+  process.env.DB_NAME = "trustvault_test";
+}
 const storageDir = await mkdtemp(path.join(tmpdir(), "trustvault-grants-"));
 process.env.VAULT_STORAGE_DIR = storageDir;
 process.env.VAULT_ENCRYPTION_KEY = "cd".repeat(32);

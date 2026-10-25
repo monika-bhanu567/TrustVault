@@ -12,7 +12,7 @@ The API, not the React interface, makes every content-access decision. A documen
 | Expired access remains usable | The engine rejects expiry at decision time rather than relying on scheduled cleanup. | `authorization-expiry.test.ts`. |
 | Ciphertext modification or metadata/file swapping | AES-GCM authentication and a SHA-256 plaintext hash are checked before a download stream is released. Storage keys are random UUIDs. | `encrypted-storage.test.ts`. |
 | Uploading executable/polyglot content | MIME allowlist, PDF/PNG/JPEG signatures, NUL-byte rejection for text, and a 10 MiB stream limit run server-side. | Upload route validation and storage tests. |
-| Audit evidence is altered quietly | Events are append-only at PostgreSQL level and form a serialized HMAC chain. Verification recalculates the entire chain. | `audit-service.test.ts`; `/audit/verify`. |
+| Audit evidence is altered quietly | Events are append-only at PostgreSQL level and form serialized HMAC chains. Verification recalculates the active signed epoch. | `audit-service.test.ts`; guarded end-to-end flow; `/audit/verify`. |
 | A download occurs without evidence | A `DOCUMENT_DOWNLOADED` audit event is committed before decryption; an audit write failure prevents release. Denied read/edit attempts are also recorded without filenames or contents. | Live replacement/download/revoke test and audit verification. |
 | File replacement destroys the only readable version on a failure | A replacement writes new ciphertext under a new UUID, commits database metadata and audit atomically, then attempts old-ciphertext cleanup. A cleanup failure can leave an orphan but cannot lose the committed document. | Replacement route design and live test. |
 | An editor destroys the owner's document | `EDIT` means replacement only. Deletion is independently restricted to the current owner and soft-deletes the record before ciphertext cleanup. | Owner-only deletion route. |
@@ -21,6 +21,7 @@ The API, not the React interface, makes every content-access decision. A documen
 ## Known limitations accepted for this iteration
 
 - Audit-chain integrity depends on protecting `AUDIT_HMAC_KEY`; a database administrator who also obtains that key can forge a chain. Production deployment should keep the key in a dedicated secret manager or external signing service.
+- The pre-cutover legacy audit segment is immutable but cryptographically unverifiable because its original signing key was unavailable after migration. It is preserved unchanged and the API reports this explicitly. Migration `007` starts a separate verifiable epoch rather than rewriting historical evidence.
 - Failed unauthenticated attempts are audited best-effort: failure to write that event never changes the denial decision. Successful downloads fail closed if their audit event cannot be written.
 - There is no user-facing document deletion or version-recovery feature yet. This avoids pretending that secure deletion and recovery semantics are solved, but it also means test and obsolete documents require an operational retention process.
 - Administrators require an operational provisioning step; self-registration intentionally creates only `OWNER` accounts, so production deployment must seed or promote the controlled administrator and viewer accounts.

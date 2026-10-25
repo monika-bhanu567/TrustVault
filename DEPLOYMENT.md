@@ -32,7 +32,7 @@ The command safely retries existing objects and verifies decryption/integrity. I
 
 ## Security regression commands
 
-Run the unit suite with `npm test` in `backend`. The route-level integration scripts require an isolated local PostgreSQL database named `trustvault_test` with migrations applied; they refuse to run against another database:
+Run the unit suite with `npm test` in `backend`. The route-level integration scripts require an isolated PostgreSQL database named `trustvault_test` with migrations applied. When `DATABASE_URL` is configured, also set `TEST_DATABASE_URL` to that isolated database; the scripts refuse to use the configured application database:
 
 ```text
 npm run test:uploads
@@ -40,3 +40,13 @@ npm run test:grants
 ```
 
 The grant workflow proves that a direct API download works only while the active named grant exists, disappears after revocation, and requires a new grant before access returns.
+
+For a guarded end-to-end API/database/storage test against the configured environment:
+
+```powershell
+$env:E2E_TEST_ALLOWED = "true"
+cd backend
+npm run test:e2e
+```
+
+It creates uniquely named disposable accounts and a document, soft-deletes that document, and deactivates the accounts afterward. Audit history intentionally remains append-only.

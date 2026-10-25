@@ -22,6 +22,11 @@ interface AuditRow {
   event_hmac: string;
 }
 
+interface AuditEpochRow {
+  id: string;
+  first_event_id: string | null;
+}
+
 function toAuditEvent(row: AuditRow): AuditEvent {
   return {
     id: row.id,
@@ -68,12 +73,28 @@ export async function appendAuditEventWithClient(
   // Serialize audit-chain appends, including appends from different routes.
   await client.query("SELECT pg_advisory_xact_lock($1, $2)", [2051, 505]);
 
-  const previousResult = await client.query<{ event_hmac: string }>(
-    `SELECT event_hmac
-     FROM audit_events
-     ORDER BY id DESC
-     LIMIT 1`
+  const epochResult = await client.query<AuditEpochRow>(
+    `SELECT id::text, first_event_id::text
+     FROM audit_chain_epochs
+     WHERE status = 'ACTIVE' AND verification_status = 'VERIFIABLE'
+     FOR UPDATE`
   );
+  const epoch = epochResult.rows[0];
+
+  if (!epoch) {
+    throw new Error("No active verifiable audit epoch is configured.");
+  }
+
+  const previousResult = epoch.first_event_id
+    ? await client.query<{ event_hmac: string }>(
+        `SELECT event_hmac
+         FROM audit_events
+         WHERE id >= $1
+         ORDER BY id DESC
+         LIMIT 1`,
+        [epoch.first_event_id]
+      )
+    : { rows: [] };
 
   const previousHmac =
     previousResult.rows[0]?.event_hmac.trimEnd() ?? null;
@@ -124,7 +145,18 @@ export async function appendAuditEventWithClient(
     ]
   );
 
-  return toAuditEvent(result.rows[0]);
+  const event = toAuditEvent(result.rows[0]);
+
+  if (!epoch.first_event_id) {
+    await client.query(
+      `UPDATE audit_chain_epochs
+       SET first_event_id = $1
+       WHERE id = $2 AND first_event_id IS NULL`,
+      [event.id, epoch.id]
+    );
+  }
+
+  return event;
 }
 
 /**
@@ -154,6 +186,25 @@ export class PostgresAuditService {
   async verify(): Promise<AuditVerificationResult> {
     const secret = getSigningKey();
 
+    const epochResult = await pool.query<AuditEpochRow>(
+      `SELECT id::text, first_event_id::text
+       FROM audit_chain_epochs
+       WHERE status = 'ACTIVE' AND verification_status = 'VERIFIABLE'
+       LIMIT 1`
+    );
+    const epoch = epochResult.rows[0];
+
+    if (!epoch) {
+      throw new Error("No active verifiable audit epoch is configured.");
+    }
+
+    const legacyResult = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+       FROM audit_events
+       WHERE id < COALESCE($1::bigint, 9223372036854775807)`,
+      [epoch.first_event_id]
+    );
+
     const result = await pool.query<AuditRow>(
       `SELECT
          id::text,
@@ -166,9 +217,18 @@ export class PostgresAuditService {
          previous_hmac,
          event_hmac
        FROM audit_events
-       ORDER BY audit_events.id ASC`
+       WHERE $1::bigint IS NOT NULL AND audit_events.id >= $1
+       ORDER BY audit_events.id ASC`,
+      [epoch.first_event_id]
     );
 
-    return verifyAuditEvents(result.rows.map(toAuditEvent), secret);
+    return {
+      ...verifyAuditEvents(result.rows.map(toAuditEvent), secret),
+      epochId: epoch.id,
+      legacyEventCount: Number(legacyResult.rows[0]?.count ?? 0),
+      ...(Number(legacyResult.rows[0]?.count ?? 0) > 0
+        ? { legacyVerificationStatus: "UNVERIFIABLE_KEY_UNAVAILABLE" as const }
+        : {})
+    };
   }
 }

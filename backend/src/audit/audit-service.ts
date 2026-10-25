@@ -36,6 +36,9 @@ export interface AuditVerificationResult {
   checkedEvents: number;
   invalidEventId?: string;
   reason?: string;
+  epochId?: string;
+  legacyEventCount?: number;
+  legacyVerificationStatus?: "UNVERIFIABLE_KEY_UNAVAILABLE";
 }
 
 const GENESIS_HMAC = "GENESIS";

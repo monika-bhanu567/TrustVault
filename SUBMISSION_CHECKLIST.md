@@ -11,6 +11,7 @@
 - [x] Five-minute demo recording script
 - [x] Docker/Render and Vercel deployment configuration
 - [x] Unit tests and isolated route-level integration commands
+- [x] Guarded end-to-end authorization, revocation, integrity, and active-audit-epoch test
 
 ## Complete after account configuration
 

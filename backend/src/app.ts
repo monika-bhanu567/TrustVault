@@ -344,6 +344,9 @@ export function buildApp(sessionStore?: SessionStore) {
             ? { invalidEventId: result.invalidEventId }
             : {}),
           ...(result.reason ? { reason: result.reason } : {}),
+          ...(result.epochId ? { epochId: result.epochId } : {}),
+          ...(result.legacyEventCount ? { legacyEventCount: result.legacyEventCount } : {}),
+          ...(result.legacyVerificationStatus ? { legacyVerificationStatus: result.legacyVerificationStatus } : {}),
         };
       } catch (error) {
         request.log.error({ err: error }, "Audit verification failed");
