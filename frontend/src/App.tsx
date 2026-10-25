@@ -39,6 +39,7 @@ type User = {
 
 type ApiDocument = {
   id: string;
+  isOwner: boolean;
   original_name: string;
   mime_type: string;
   size_bytes: number | string;
@@ -47,6 +48,7 @@ type ApiDocument = {
 
 type DocumentItem = {
   id: string;
+  isOwner: boolean;
   name: string;
   mime: string;
   size: number;
@@ -190,6 +192,7 @@ function App() {
       setDocuments(
         result.documents.map((doc) => ({
           id: doc.id,
+          isOwner: doc.isOwner,
           name: doc.original_name,
           mime: doc.mime_type,
           size: Number(doc.size_bytes),
@@ -1142,16 +1145,18 @@ function App() {
                                 {formatDate(doc.createdAt)}
                               </td>
                               <td>
-                                <label className="download-button replace-file-button" title={`Replace ${doc.name}`}>
-                                  <ArrowUpRight size={17} />
-                                  <input
-                                    type="file"
-                                    accept=".pdf,.png,.jpg,.jpeg,.txt,application/pdf,image/png,image/jpeg,text/plain"
-                                    disabled={busy}
-                                    aria-label={`Replace ${doc.name}`}
-                                    onChange={(event) => void handleReplacementSelection(event, doc.id, doc.name)}
-                                  />
-                                </label>
+                                {doc.isOwner && (
+                                  <label className="download-button replace-file-button" title={`Replace ${doc.name}`}>
+                                    <ArrowUpRight size={17} />
+                                    <input
+                                      type="file"
+                                      accept=".pdf,.png,.jpg,.jpeg,.txt,application/pdf,image/png,image/jpeg,text/plain"
+                                      disabled={busy}
+                                      aria-label={`Replace ${doc.name}`}
+                                      onChange={(event) => void handleReplacementSelection(event, doc.id, doc.name)}
+                                    />
+                                  </label>
+                                )}
                                 <button
                                   className="download-button"
                                   title={`Download ${doc.name}`}
@@ -1160,15 +1165,17 @@ function App() {
                                 >
                                   <ArrowDownToLine size={17} />
                                 </button>
-                                <button
-                                  className="download-button"
-                                  title={`Delete ${doc.name}`}
-                                  aria-label={`Delete ${doc.name}`}
-                                  disabled={busy}
-                                  onClick={() => void handleDelete(doc)}
-                                >
-                                  <Trash2 size={16} />
-                                </button>
+                                {doc.isOwner && (
+                                  <button
+                                    className="download-button"
+                                    title={`Delete ${doc.name}`}
+                                    aria-label={`Delete ${doc.name}`}
+                                    disabled={busy}
+                                    onClick={() => void handleDelete(doc)}
+                                  >
+                                    <Trash2 size={16} />
+                                  </button>
+                                )}
                               </td>
                             </tr>
                           );
@@ -1252,6 +1259,7 @@ function App() {
               onClick={() =>
                 void handleDownload({
                   id: doc.documentId,
+                  isOwner: false,
                   name: doc.documentName,
                   mime: "",
                   size: 0,
@@ -1313,7 +1321,7 @@ function App() {
                     required
                   >
                     <option value="">Select a document</option>
-                    {documents.map((doc) => (
+                    {documents.filter((doc) => doc.isOwner).map((doc) => (
                       <option key={doc.id} value={doc.id}>
                         {doc.name}
                       </option>

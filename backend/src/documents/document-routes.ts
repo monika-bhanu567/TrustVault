@@ -35,6 +35,7 @@ const UUID_PATTERN =
 
 interface DocumentRow {
   id: string;
+  owner_id: string;
   original_name: string;
   mime_type: string;
   size_bytes: string;
@@ -321,7 +322,7 @@ export async function registerDocumentRoutes(
     }
 
     const result = await pool.query<DocumentRow>(
-      `SELECT DISTINCT d.id, d.original_name, d.mime_type,
+      `SELECT DISTINCT d.id, d.owner_id, d.original_name, d.mime_type,
               d.size_bytes, d.created_at
        FROM documents d
        LEFT JOIN document_grants g
@@ -336,7 +337,12 @@ export async function registerDocumentRoutes(
       [auth.user.id]
     );
 
-    return { documents: result.rows };
+    return {
+      documents: result.rows.map(({ owner_id, ...document }) => ({
+        ...document,
+        isOwner: owner_id === auth.user.id
+      }))
+    };
   });
 
   app.get<{ Params: { id: string } }>(
