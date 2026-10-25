@@ -102,12 +102,13 @@ const navigation = [
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const isFormData = options.body instanceof FormData;
+  const hasJsonBody = options.body != null && !isFormData;
 
   const response = await fetch(`/api${path}`, {
     ...options,
     credentials: "include",
     headers: {
-      ...(isFormData ? {} : { "Content-Type": "application/json" }),
+      ...(hasJsonBody ? { "Content-Type": "application/json" } : {}),
       ...options.headers,
     },
   });
