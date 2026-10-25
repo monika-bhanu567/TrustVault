@@ -15,7 +15,10 @@ import {
   type DocumentGrant
 } from "../security/authorization.js";
 import { EncryptedStorage } from "../storage/encrypted-storage.js";
-import { appendAuditEventWithClient } from "../audit/postgres-audit-service.js";
+import {
+  appendAuditEventWithClient,
+  PostgresAuditService
+} from "../audit/postgres-audit-service.js";
 
 const COOKIE_NAME = "trustvault_session";
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -160,6 +163,24 @@ export async function registerDocumentRoutes(
   guard: AuthSessionGuard,
   storage: EncryptedStorage
 ): Promise<void> {
+  const auditService = new PostgresAuditService();
+
+  async function recordAccessAttempt(
+    eventType: "DOCUMENT_DOWNLOADED" | "DOCUMENT_ACCESS_DENIED",
+    actorId: string | null,
+    documentId: string | null,
+    action: "READ" | "EDIT",
+    metadata: Record<string, unknown> = {}
+  ): Promise<void> {
+    await auditService.append({
+      eventType,
+      actorId,
+      entityType: "document",
+      entityId: documentId,
+      metadata: { action, ...metadata }
+    });
+  }
+
   app.post("/documents", async (request, reply) => {
     const auth = await guard.validate(request.cookies[COOKIE_NAME]);
 
@@ -324,12 +345,18 @@ export async function registerDocumentRoutes(
       const auth = await guard.validate(request.cookies[COOKIE_NAME]);
 
       if (!auth.valid) {
+        await recordAccessAttempt("DOCUMENT_ACCESS_DENIED", null, null, "READ", {
+          reason: "UNAUTHENTICATED"
+        }).catch((error) => request.log.error({ err: error }, "Failed to audit denied access"));
         return reply.code(401).send({ error: "Unauthorized" });
       }
 
       const documentId = request.params.id;
 
       if (!UUID_PATTERN.test(documentId)) {
+        await recordAccessAttempt("DOCUMENT_ACCESS_DENIED", auth.user.id, null, "READ", {
+          reason: "INVALID_DOCUMENT_ID"
+        }).catch((error) => request.log.error({ err: error }, "Failed to audit denied access"));
         return reply.code(404).send({ error: "Document not found" });
       }
 
@@ -345,6 +372,9 @@ export async function registerDocumentRoutes(
       const document = result.rows[0];
 
       if (!document) {
+        await recordAccessAttempt("DOCUMENT_ACCESS_DENIED", auth.user.id, documentId, "READ", {
+          reason: "DOCUMENT_NOT_FOUND"
+        }).catch((error) => request.log.error({ err: error }, "Failed to audit denied access"));
         return reply.code(404).send({ error: "Document not found" });
       }
 
@@ -363,6 +393,9 @@ export async function registerDocumentRoutes(
         !currentUser.is_active ||
         !["ADMIN", "OWNER", "VIEWER"].includes(currentUser.role)
       ) {
+        await recordAccessAttempt("DOCUMENT_ACCESS_DENIED", auth.user.id, documentId, "READ", {
+          reason: "INACTIVE_OR_INVALID_ROLE"
+        }).catch((error) => request.log.error({ err: error }, "Failed to audit denied access"));
         return reply.code(404).send({ error: "Document not found" });
       }
 
@@ -400,7 +433,18 @@ export async function registerDocumentRoutes(
       });
 
       if (!decision.allowed) {
+        await recordAccessAttempt("DOCUMENT_ACCESS_DENIED", auth.user.id, documentId, "READ", {
+          reason: decision.reason
+        }).catch((error) => request.log.error({ err: error }, "Failed to audit denied access"));
         return reply.code(404).send({ error: "Document not found" });
+      }
+
+      // Audit before decryption so no plaintext is released without durable evidence.
+      try {
+        await recordAccessAttempt("DOCUMENT_DOWNLOADED", auth.user.id, documentId, "READ");
+      } catch (error) {
+        request.log.error({ err: error, documentId }, "Download audit write failed");
+        return reply.code(503).send({ error: "Document temporarily unavailable" });
       }
 
       let temporaryPath: string;
@@ -559,6 +603,9 @@ export async function registerDocumentRoutes(
           await client.query("ROLLBACK");
           transactionOpen = false;
           request.log.warn({ documentId, userId: auth.user.id }, "Document replacement denied");
+          await recordAccessAttempt("DOCUMENT_ACCESS_DENIED", auth.user.id, documentId, "EDIT", {
+            reason: "NO_EDIT_PERMISSION"
+          }).catch((error) => request.log.error({ err: error }, "Failed to audit denied access"));
           return reply.code(403).send({ error: "You do not have permission to replace this document" });
         }
 
