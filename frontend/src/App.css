@@ -72,6 +72,29 @@ button:not(:disabled) {
   cursor: pointer;
 }
 
+.replace-file-button,
+.replace-document-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.replace-file-button input,
+.replace-document-button input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.replacement-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 #root {
   min-height: 100vh;
 }

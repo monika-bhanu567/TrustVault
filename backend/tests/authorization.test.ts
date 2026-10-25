@@ -145,4 +145,34 @@ describe("AuthorizationDecisionEngine", () => {
 
     expect(decision.allowed).toBe(false);
   });
+
+  it("allows only an active edit grant to replace document content", () => {
+    const writable = engine.decide(
+      request({
+        action: "EDIT",
+        grants: [{
+          documentId: document.id,
+          userId: viewer.id,
+          canRead: true,
+          canEdit: true,
+          isActive: true
+        }]
+      })
+    );
+    const readOnly = engine.decide(
+      request({
+        action: "EDIT",
+        grants: [{
+          documentId: document.id,
+          userId: viewer.id,
+          canRead: true,
+          canEdit: false,
+          isActive: true
+        }]
+      })
+    );
+
+    expect(writable.allowed).toBe(true);
+    expect(readOnly.allowed).toBe(false);
+  });
 });

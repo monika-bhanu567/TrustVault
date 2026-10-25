@@ -58,4 +58,22 @@ describe("Grant expiry and revocation", () => {
 
     expect(engine.decide(request).allowed).toBe(true);
   });
+
+  it("denies edit when a write grant is expired or revoked", () => {
+    const expired = viewerRequest({
+      canEdit: true,
+      expiresAt: new Date(Date.now() - 60_000)
+    });
+    expired.action = "EDIT";
+
+    const revoked = viewerRequest({
+      canEdit: true,
+      isActive: false,
+      revokedAt: new Date()
+    });
+    revoked.action = "EDIT";
+
+    expect(engine.decide(expired).allowed).toBe(false);
+    expect(engine.decide(revoked).allowed).toBe(false);
+  });
 });

@@ -164,6 +164,7 @@ function App() {
   const [loadingVerification, setLoadingVerification] = useState(false);
   const [sharingDocumentId, setSharingDocumentId] = useState("");
   const [shareEmail, setShareEmail] = useState("");
+  const [sharePermission, setSharePermission] = useState<"read" | "write">("read");
   const [grants, setGrants] = useState<DocumentGrant[]>([]);
   const [loadingGrants, setLoadingGrants] = useState(false);
   const [activeNav, setActiveNav] = useState("Overview");
@@ -343,6 +344,44 @@ function App() {
       input.value = "";
     }
   }
+
+  async function handleReplacementSelection(
+    event: ChangeEvent<HTMLInputElement>,
+    documentId: string,
+    documentName: string,
+  ) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file) return;
+
+    const allowedTypes = ["application/pdf", "image/png", "image/jpeg", "text/plain"];
+    if (file.size > 10 * 1024 * 1024 || !allowedTypes.includes(file.type)) {
+      showMessage("Choose a PDF, PNG, JPEG, or plain text file smaller than 10 MB.", true);
+      input.value = "";
+      return;
+    }
+
+    setBusy(true);
+    showMessage("");
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      await api(`/documents/${encodeURIComponent(documentId)}/content`, {
+        method: "POST",
+        body: formData,
+      });
+      input.value = "";
+      await Promise.all([loadDocuments(), loadSharedDocuments()]);
+      showMessage(`${documentName} was replaced and re-encrypted successfully.`);
+    } catch (error) {
+      showMessage(
+        error instanceof Error ? error.message : "Unable to replace document content.",
+        true,
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
   async function loadAuditEvents() {
   setLoadingAudit(true);
 
@@ -436,7 +475,7 @@ function App() {
         body: JSON.stringify({
           email: shareEmail.trim(),
           canRead: true,
-          canEdit: false,
+          canEdit: sharePermission === "write",
         }),
       });
 
@@ -1064,6 +1103,16 @@ function App() {
                                 {formatDate(doc.createdAt)}
                               </td>
                               <td>
+                                <label className="download-button replace-file-button" title={`Replace ${doc.name}`}>
+                                  <ArrowUpRight size={17} />
+                                  <input
+                                    type="file"
+                                    accept=".pdf,.png,.jpg,.jpeg,.txt,application/pdf,image/png,image/jpeg,text/plain"
+                                    disabled={busy}
+                                    aria-label={`Replace ${doc.name}`}
+                                    onChange={(event) => void handleReplacementSelection(event, doc.id, doc.name)}
+                                  />
+                                </label>
                                 <button
                                   className="download-button"
                                   title={`Download ${doc.name}`}
@@ -1165,6 +1214,23 @@ function App() {
               <ArrowDownToLine size={16} />
               Download
             </button>
+            {doc.canEdit && (
+              <label className="secondary-button replace-document-button">
+                <ArrowUpRight size={16} />
+                Replace contents
+                <input
+                  type="file"
+                  accept=".pdf,.png,.jpg,.jpeg,.txt,application/pdf,image/png,image/jpeg,text/plain"
+                  disabled={busy}
+                  onChange={(event) =>
+                    void handleReplacementSelection(event, doc.documentId, doc.documentName)
+                  }
+                />
+              </label>
+            )}
+            {doc.canEdit && (
+              <p className="replacement-note">Replacing content creates fresh encrypted storage; the file is not edited in-browser.</p>
+            )}
           </article>
         ))}
       </div>
@@ -1216,9 +1282,23 @@ function App() {
                     required
                   />
 
-                  <p className="share-help">
-                    Recipients receive read-only access.
-                  </p>
+<label htmlFor="share-permission">Access level</label>
+<select
+  id="share-permission"
+  value={sharePermission}
+  onChange={(event) =>
+    setSharePermission(event.target.value as "read" | "write")
+  }
+>
+  <option value="read">Read only — can view and download</option>
+  <option value="write">Write access — can edit shared content</option>
+</select>
+
+<p className="share-help">
+  {sharePermission === "write"
+    ? "The recipient will be granted edit permission."
+    : "The recipient can view and download but not edit."}
+</p>
 
                   <button
                     className="primary-button"
