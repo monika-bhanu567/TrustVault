@@ -13,7 +13,9 @@ import {
 import {
   mkdir,
   rename,
-  rm
+  rm,
+  readFile,
+  writeFile
 } from "node:fs/promises";
 import { Transform, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -32,6 +34,9 @@ export interface EncryptedFileMetadata {
 
 export class EncryptedStorage {
   private readonly root: string;
+  private readonly supabaseUrl: string | undefined;
+  private readonly serviceRoleKey: string | undefined;
+  private readonly bucket: string;
   private key: Buffer | undefined;
 
   constructor() {
@@ -39,6 +44,13 @@ export class EncryptedStorage {
       process.env.VAULT_STORAGE_DIR ??
         path.join(process.cwd(), "storage")
     );
+    this.supabaseUrl = process.env.SUPABASE_URL?.replace(/\/$/, "");
+    this.serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    this.bucket = process.env.SUPABASE_STORAGE_BUCKET ?? "trustvault-encrypted";
+  }
+
+  private get cloudEnabled(): boolean {
+    return Boolean(this.supabaseUrl && this.serviceRoleKey);
   }
 
   private getKey(): Buffer {
@@ -72,6 +84,31 @@ export class EncryptedStorage {
     }
 
     return path.join(this.root, `${storageKey}.enc`);
+  }
+
+  private objectPath(storageKey: string): string {
+    this.getPath(storageKey);
+    return `${storageKey}.enc`;
+  }
+
+  private async cloudRequest(storageKey: string, init: RequestInit): Promise<Response> {
+    if (!this.cloudEnabled) throw new Error("Supabase Storage is not configured");
+    const response = await fetch(
+      `${this.supabaseUrl}/storage/v1/object/${encodeURIComponent(this.bucket)}/${encodeURIComponent(this.objectPath(storageKey))}`,
+      { ...init, headers: { apikey: this.serviceRoleKey!, Authorization: `Bearer ${this.serviceRoleKey!}`, ...init.headers } }
+    );
+    if (!response.ok) throw new Error(`SUPABASE_STORAGE_${response.status}`);
+    return response;
+  }
+
+  private async uploadCiphertext(storageKey: string, encryptedPath: string): Promise<void> {
+    const body = await readFile(encryptedPath);
+    await this.cloudRequest(storageKey, { method: "POST", headers: { "Content-Type": "application/octet-stream", "x-upsert": "false" }, body });
+  }
+
+  private async downloadCiphertext(storageKey: string, targetPath: string): Promise<void> {
+    const response = await this.cloudRequest(storageKey, { method: "GET" });
+    await writeFile(targetPath, Buffer.from(await response.arrayBuffer()), { flag: "wx", mode: 0o600 });
   }
 
   async encrypt(
@@ -116,6 +153,17 @@ export class EncryptedStorage {
 
       await rename(tempPath, finalPath);
 
+      if (this.cloudEnabled) {
+        try {
+          await this.uploadCiphertext(storageKey, finalPath);
+          await rm(finalPath, { force: true });
+        } catch (error) {
+          // Do not leave an object reachable without a committed document row.
+          await this.cloudRequest(storageKey, { method: "DELETE" }).catch(() => {});
+          throw error;
+        }
+      }
+
       return {
         storageKey,
         iv,
@@ -139,7 +187,10 @@ export class EncryptedStorage {
     const key = this.getKey();
     await this.ensureRoot();
 
-    const encryptedPath = this.getPath(storageKey);
+    const localEncryptedPath = this.getPath(storageKey);
+    const encryptedPath = this.cloudEnabled
+      ? path.join(this.root, `${randomUUID()}.ciphertext.tmp`)
+      : localEncryptedPath;
     const plaintextPath = path.join(
       this.root,
       `${randomUUID()}.plaintext.tmp`
@@ -158,6 +209,7 @@ export class EncryptedStorage {
     });
 
     try {
+      if (this.cloudEnabled) await this.downloadCiphertext(storageKey, encryptedPath);
       await pipeline(
         createReadStream(encryptedPath),
         decipher,
@@ -176,10 +228,26 @@ export class EncryptedStorage {
     } catch {
       await rm(plaintextPath, { force: true });
       throw new Error("CONTENT_INTEGRITY_FAILURE");
+    } finally {
+      if (this.cloudEnabled) await rm(encryptedPath, { force: true });
     }
   }
 
   async deleteEncryptedFile(storageKey: string): Promise<void> {
+    if (this.cloudEnabled) {
+      await this.cloudRequest(storageKey, { method: "DELETE" });
+      return;
+    }
     await rm(this.getPath(storageKey), { force: true });
+  }
+
+  async migrateLocalCiphertext(storageKey: string, iv: Buffer, tag: Buffer, sha256: string): Promise<void> {
+    if (!this.cloudEnabled) throw new Error("Supabase Storage is not configured");
+    const localPath = this.getPath(storageKey);
+    await this.uploadCiphertext(storageKey, localPath).catch(async (error) => {
+      if (!(error instanceof Error) || !error.message.endsWith("409")) throw error;
+    });
+    const plaintextPath = await this.decryptToTemporaryFile(storageKey, iv, tag, sha256);
+    await rm(plaintextPath, { force: true });
   }
 }

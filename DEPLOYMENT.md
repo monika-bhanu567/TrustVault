@@ -19,3 +19,11 @@ Import the repository into Vercel with root directory `frontend`, build command 
 3. Run the encrypted-storage migration and verify each migrated document decrypts and hashes correctly.
 4. Investigate the known missing `README.md` ciphertext before representing all legacy documents as available.
 5. Deploy backend first, set `FRONTEND_ORIGIN`, then deploy Vercel frontend with `VITE_API_BASE_URL`.
+
+Run storage migration from `backend` only after the bucket credentials are configured:
+
+```text
+node scripts/migrate-encrypted-storage.mjs
+```
+
+The command safely retries existing objects and verifies decryption/integrity. It reports missing legacy ciphertext without modifying records. Only after review, quarantine missing records with `node scripts/migrate-encrypted-storage.mjs --quarantine-missing`.
