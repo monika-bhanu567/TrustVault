@@ -15,6 +15,7 @@ The API, not the React interface, makes every content-access decision. A documen
 | Audit evidence is altered quietly | Events are append-only at PostgreSQL level and form a serialized HMAC chain. Verification recalculates the entire chain. | `audit-service.test.ts`; `/audit/verify`. |
 | A download occurs without evidence | A `DOCUMENT_DOWNLOADED` audit event is committed before decryption; an audit write failure prevents release. Denied read/edit attempts are also recorded without filenames or contents. | Live replacement/download/revoke test and audit verification. |
 | File replacement destroys the only readable version on a failure | A replacement writes new ciphertext under a new UUID, commits database metadata and audit atomically, then attempts old-ciphertext cleanup. A cleanup failure can leave an orphan but cannot lose the committed document. | Replacement route design and live test. |
+| An editor destroys the owner's document | `EDIT` means replacement only. Deletion is independently restricted to the current owner and soft-deletes the record before ciphertext cleanup. | Owner-only deletion route. |
 | Administrator automatically reads every document | `ADMIN` is deliberately not a content superuser. Admin content access still requires an explicit active grant. | `authorization.test.ts`. |
 
 ## Known limitations accepted for this iteration

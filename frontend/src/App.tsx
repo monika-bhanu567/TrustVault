@@ -25,6 +25,7 @@ import {
   Share2,
   SlidersHorizontal,
   Sparkles,
+  Trash2,
   Users,
   X,
 } from "lucide-react";
@@ -545,6 +546,25 @@ function App() {
         error instanceof Error ? error.message : "Download failed.",
         true,
       );
+    }
+  }
+
+  async function handleDelete(doc: DocumentItem) {
+    if (!window.confirm(`Permanently remove ${doc.name} from your vault?`)) return;
+
+    setBusy(true);
+    showMessage("");
+    try {
+      await api(`/documents/${encodeURIComponent(doc.id)}`, { method: "DELETE" });
+      await loadDocuments();
+      showMessage(`${doc.name} was removed from your vault.`);
+    } catch (error) {
+      showMessage(
+        error instanceof Error ? error.message : "Unable to remove document.",
+        true,
+      );
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -1120,6 +1140,15 @@ function App() {
                                   onClick={() => void handleDownload(doc)}
                                 >
                                   <ArrowDownToLine size={17} />
+                                </button>
+                                <button
+                                  className="download-button"
+                                  title={`Delete ${doc.name}`}
+                                  aria-label={`Delete ${doc.name}`}
+                                  disabled={busy}
+                                  onClick={() => void handleDelete(doc)}
+                                >
+                                  <Trash2 size={16} />
                                 </button>
                               </td>
                             </tr>

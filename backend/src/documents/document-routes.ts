@@ -486,6 +486,66 @@ export async function registerDocumentRoutes(
     }
   );
 
+  // Deletion is deliberately owner-only. EDIT grants allow content replacement,
+  // not destructive lifecycle changes.
+  app.delete<{ Params: { id: string } }>("/documents/:id", async (request, reply) => {
+    const auth = await guard.validate(request.cookies[COOKIE_NAME]);
+    if (!auth.valid) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+
+    const documentId = request.params.id;
+    if (!UUID_PATTERN.test(documentId)) {
+      return reply.code(404).send({ error: "Document not found" });
+    }
+
+    let client: PoolClient | undefined;
+    let transactionOpen = false;
+    let deletedDocument: Pick<DownloadRow, "storage_key"> | undefined;
+
+    try {
+      client = await pool.connect();
+      await client.query("BEGIN");
+      transactionOpen = true;
+      const result = await client.query<Pick<DownloadRow, "storage_key">>(
+        `UPDATE documents
+         SET status = 'DELETED', updated_at = NOW()
+         WHERE id = $1 AND owner_id = $2 AND status = 'ACTIVE'
+         RETURNING storage_key`,
+        [documentId, auth.user.id]
+      );
+      deletedDocument = result.rows[0];
+      if (!deletedDocument) {
+        await client.query("ROLLBACK");
+        transactionOpen = false;
+        return reply.code(404).send({ error: "Document not found" });
+      }
+
+      await appendAuditEventWithClient(client, {
+        eventType: "DOCUMENT_DELETED",
+        actorId: auth.user.id,
+        entityType: "document",
+        entityId: documentId,
+        metadata: {}
+      });
+      await client.query("COMMIT");
+      transactionOpen = false;
+
+      await storage.deleteEncryptedFile(deletedDocument.storage_key).catch((error) => {
+        request.log.error({ err: error, documentId }, "Deleted ciphertext cleanup failed");
+      });
+      return reply.code(204).send();
+    } catch (error) {
+      if (client && transactionOpen) {
+        await client.query("ROLLBACK").catch(() => {});
+      }
+      request.log.error({ err: error, documentId }, "Document deletion failed");
+      return reply.code(500).send({ error: "Unable to delete document" });
+    } finally {
+      client?.release();
+    }
+  });
+
   // Replaces a document with a newly validated and independently encrypted file.
   // This is intentionally a replacement workflow: PDFs and images are not editable
   // in the browser merely because a recipient has EDIT access.
