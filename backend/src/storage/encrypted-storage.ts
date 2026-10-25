@@ -196,11 +196,32 @@ export class EncryptedStorage {
       `${randomUUID()}.plaintext.tmp`
     );
 
+    try {
+      if (this.cloudEnabled) await this.downloadCiphertext(storageKey, encryptedPath);
+      return await this.decryptPathToTemporaryFile(
+        encryptedPath,
+        plaintextPath,
+        key,
+        iv,
+        tag,
+        expectedSha256
+      );
+    } finally {
+      if (this.cloudEnabled) await rm(encryptedPath, { force: true });
+    }
+  }
+
+  private async decryptPathToTemporaryFile(
+    encryptedPath: string,
+    plaintextPath: string,
+    key: Buffer,
+    iv: Buffer,
+    tag: Buffer,
+    expectedSha256: string
+  ): Promise<string> {
     const decipher = createDecipheriv(ALGORITHM, key, iv);
     decipher.setAuthTag(tag);
-
     const hash = createHash("sha256");
-
     const inspect = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
         hash.update(chunk);
@@ -209,28 +230,39 @@ export class EncryptedStorage {
     });
 
     try {
-      if (this.cloudEnabled) await this.downloadCiphertext(storageKey, encryptedPath);
       await pipeline(
         createReadStream(encryptedPath),
         decipher,
         inspect,
-        createWriteStream(plaintextPath, {
-          flags: "wx",
-          mode: 0o600
-        })
+        createWriteStream(plaintextPath, { flags: "wx", mode: 0o600 })
       );
-
       if (hash.digest("hex") !== expectedSha256) {
         throw new Error("CONTENT_INTEGRITY_FAILURE");
       }
-
       return plaintextPath;
     } catch {
       await rm(plaintextPath, { force: true });
       throw new Error("CONTENT_INTEGRITY_FAILURE");
-    } finally {
-      if (this.cloudEnabled) await rm(encryptedPath, { force: true });
     }
+  }
+
+  async verifyLocalCiphertext(
+    storageKey: string,
+    iv: Buffer,
+    tag: Buffer,
+    sha256: string
+  ): Promise<void> {
+    await this.ensureRoot();
+    const plaintextPath = path.join(this.root, `${randomUUID()}.plaintext.tmp`);
+    const verifiedPath = await this.decryptPathToTemporaryFile(
+      this.getPath(storageKey),
+      plaintextPath,
+      this.getKey(),
+      iv,
+      tag,
+      sha256
+    );
+    await rm(verifiedPath, { force: true });
   }
 
   async deleteEncryptedFile(storageKey: string): Promise<void> {
@@ -244,6 +276,9 @@ export class EncryptedStorage {
   async migrateLocalCiphertext(storageKey: string, iv: Buffer, tag: Buffer, sha256: string): Promise<void> {
     if (!this.cloudEnabled) throw new Error("Supabase Storage is not configured");
     const localPath = this.getPath(storageKey);
+    // Never persist a legacy ciphertext remotely until its local ciphertext,
+    // metadata, authenticated decryption, and plaintext hash agree.
+    await this.verifyLocalCiphertext(storageKey, iv, tag, sha256);
     await this.uploadCiphertext(storageKey, localPath).catch(async (error) => {
       if (!(error instanceof Error) || !error.message.endsWith("409")) throw error;
     });

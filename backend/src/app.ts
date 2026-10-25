@@ -301,18 +301,19 @@ export function buildApp(sessionStore?: SessionStore) {
                   created_at, metadata
            FROM audit_events
            WHERE $2::boolean
-              OR actor_id = $1
+              OR actor_id = $1::text
               OR (
                 entity_type = 'document'
                 AND entity_id IN (
-                  SELECT id::text FROM documents WHERE owner_id = $1
+                  SELECT id::text FROM documents WHERE owner_id = $1::uuid
                 )
               )
               OR (
-                metadata ->> 'documentId' IN (
-                  SELECT id::text FROM documents WHERE owner_id = $1
+                COALESCE(metadata, '{}'::jsonb) ->> 'documentId' IN (
+                  SELECT id::text FROM documents WHERE owner_id = $1::uuid
                 )
               )
+              OR COALESCE(metadata, '{}'::jsonb) ->> 'recipientUserId' = $1::text
            ORDER BY id DESC
            LIMIT $3`,
           [auth.user.id, isAdmin, requestedLimit],
@@ -324,7 +325,10 @@ export function buildApp(sessionStore?: SessionStore) {
             eventType: event.event_type,
             entityType: event.entity_type,
             createdAt: new Date(event.created_at).toISOString(),
-            metadata: event.metadata,
+            metadata:
+              event.metadata && typeof event.metadata === "object"
+                ? event.metadata
+                : {},
           })),
         };
       } catch (error) {

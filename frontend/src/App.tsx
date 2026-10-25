@@ -89,7 +89,7 @@ type AuditEvent = {
   eventType: string;
   entityType: string;
   createdAt: string;
-  metadata: Record<string, unknown>;
+  metadata: Record<string, unknown> | null;
 };
 
 type AuditVerification = {
@@ -111,6 +111,22 @@ const navigation = [
   { label: "Shared by me", icon: Share2 },
   { label: "Audit Trail", icon: Activity },
 ];
+
+const publicFeatureCards = [
+  [FileText, "Secure document storage", "Validated uploads, encrypted file storage, and protected downloads."],
+  [Share2, "Controlled sharing", "Share with registered people—document by document."],
+  [ShieldCheck, "Read and write permissions", "Give access appropriate to the work, without widening it further."],
+  [Activity, "Activity and audit trails", "Review important document and permission activity."],
+  [CheckCircle2, "Integrity verification", "Authenticated encryption and content checks protect downloaded files."],
+  [Folder, "Workspace management", "Keep owned and shared documents clear, separate, and actionable."],
+] as const;
+
+const publicSecurityCards = [
+  [LockKeyhole, "Encryption at rest", "Files are encrypted with AES-256-GCM and checked for integrity before release."],
+  [ShieldCheck, "Zero-trust authorization", "The backend evaluates ownership and live grants on every protected request."],
+  [Share2, "Controlled sharing", "Named people receive only the read or write capability an owner chooses."],
+  [Activity, "Audit evidence", "Security-relevant activity is recorded without exposing document content."],
+] as const;
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "/api").replace(/\/$/, "");
 
@@ -165,9 +181,43 @@ function getFileKind(mime: string) {
   return { label: "Text document", icon: FileText, tone: "text" };
 }
 
+function formatAuditEventType(eventType: string): string {
+  return eventType
+    .split("_")
+    .filter(Boolean)
+    .map((word) => word.charAt(0) + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function formatAuditDetails(metadata: unknown): string {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return "—";
+  }
+
+  const entries = Object.entries(metadata as Record<string, unknown>);
+  if (entries.length === 0) return "—";
+
+  return entries
+    .map(([key, value]) => {
+      if (value === null || value === undefined) return `${key}: —`;
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+        return `${key}: ${String(value)}`;
+      }
+      try {
+        return `${key}: ${JSON.stringify(value)}`;
+      } catch {
+        return `${key}: [unavailable]`;
+      }
+    })
+    .join(" · ");
+}
+
 function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [publicPath, setPublicPath] = useState(() => window.location.pathname);
+  const [authMode, setAuthMode] = useState<"login" | "register">(
+    () => window.location.pathname === "/signup" ? "register" : "login",
+  );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [documents, setDocuments] = useState<DocumentItem[]>([]); 
@@ -175,6 +225,7 @@ function App() {
   const [loadingShared, setLoadingShared] = useState(false);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [loadingAudit, setLoadingAudit] = useState(false);
+  const [auditError, setAuditError] = useState("");
   const [auditVerification, setAuditVerification] =
   useState<AuditVerification | null>(null);
   const [loadingVerification, setLoadingVerification] = useState(false);
@@ -238,6 +289,39 @@ function App() {
   }, [checkSession]);
 
   useEffect(() => {
+    const handlePopState = () => {
+      setPublicPath(window.location.pathname);
+      setAuthMode(window.location.pathname === "/signup" ? "register" : "login");
+      window.scrollTo({ top: 0, behavior: "auto" });
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  useEffect(() => {
+    if (user || typeof IntersectionObserver === "undefined") return;
+    const elements = document.querySelectorAll<HTMLElement>(".reveal-on-scroll");
+    const observer = new IntersectionObserver(
+      (entries) => entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("is-visible");
+          observer.unobserve(entry.target);
+        }
+      }),
+      { threshold: 0.16 },
+    );
+    elements.forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, [user, publicPath]);
+
+  const navigatePublic = (path: string, mode?: "login" | "register") => {
+    window.history.pushState({}, "", path);
+    setPublicPath(path);
+    if (mode) setAuthMode(mode);
+    window.scrollTo({ top: 0, behavior: "auto" });
+  };
+
+  useEffect(() => {
     if (!user) return;
     void loadDocuments().catch((error: unknown) => {
       showMessage(
@@ -283,6 +367,10 @@ function App() {
   const totalBytes = documents.reduce((total, doc) => total + doc.size, 0);
   const storageLimit = 100 * 1024 * 1024;
   const storagePercent = Math.min(100, (totalBytes / storageLimit) * 100);
+  const categoryCount = useMemo(
+    () => new Set(documents.map((document) => document.category).filter(Boolean)).size,
+    [documents],
+  );
 
   async function handleAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -419,22 +507,23 @@ function App() {
     }
   }
   async function loadAuditEvents() {
-  setLoadingAudit(true);
+    setLoadingAudit(true);
+    setAuditError("");
 
-  try {
-    const result = await api<{ events: AuditEvent[] }>("/audit?limit=50");
-    setAuditEvents(result.events);
-  } catch (error) {
-    showMessage(
-      error instanceof Error
+    try {
+      const result = await api<{ events?: AuditEvent[] }>("/audit?limit=50");
+      setAuditEvents(Array.isArray(result.events) ? result.events : []);
+    } catch (error) {
+      const message = error instanceof Error
         ? error.message
-        : "Unable to load audit events.",
-      true
-    );
-  } finally {
-    setLoadingAudit(false);
+        : "Unable to load audit events.";
+      setAuditEvents([]);
+      setAuditError(message);
+      showMessage(message, true);
+    } finally {
+      setLoadingAudit(false);
+    }
   }
-}
 
   async function verifyAuditIntegrity() {
   setLoadingVerification(true);
@@ -632,35 +721,78 @@ function App() {
     }
   }
 
+  const publicHeader = (
+    <header className="landing-nav">
+      <a className="landing-brand" href="/" onClick={(event) => { event.preventDefault(); navigatePublic("/"); }}><TrustVaultLogo /></a>
+      <nav aria-label="Main navigation">
+        <a href="/features" onClick={(event) => { event.preventDefault(); navigatePublic("/features"); }}>Features</a>
+        <a href="/security" onClick={(event) => { event.preventDefault(); navigatePublic("/security"); }}>Security</a>
+        <a href="/#how-it-works" onClick={(event) => { event.preventDefault(); navigatePublic("/"); window.setTimeout(() => document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" }), 0); }}>How It Works</a>
+        <a href="/#about" onClick={(event) => { event.preventDefault(); navigatePublic("/"); window.setTimeout(() => document.getElementById("about")?.scrollIntoView({ behavior: "smooth" }), 0); }}>About</a>
+      </nav>
+      <div className="landing-nav-actions">
+        <button className="landing-text-button" onClick={() => navigatePublic("/signin", "login")}>Sign In</button>
+        <button className="landing-small-cta" onClick={() => navigatePublic("/signup", "register")}>Get Started <ArrowUpRight size={15} /></button>
+      </div>
+    </header>
+  );
+
+  if (!user && (publicPath === "/signin" || publicPath === "/signup")) {
+    const registering = publicPath === "/signup";
+    return (
+      <main className="auth-page">
+        <header className="auth-page-nav"><a href="/" onClick={(event) => { event.preventDefault(); navigatePublic("/"); }}><TrustVaultLogo /></a><button className="auth-back-link" onClick={() => navigatePublic("/")}>← Back to home</button></header>
+        <section className="auth-page-shell" aria-labelledby="auth-page-title">
+          <div className="auth-page-intro"><span className="landing-eyebrow">EXPLAINABLE ZERO-TRUST</span><h1>Security that stays close to your documents.</h1><p>Sign in to your private workspace and keep every access decision accountable.</p></div>
+          <section className="auth-card auth-page-card reveal-on-scroll is-visible">
+            <div className="auth-brand"><TrustVaultLogo compact /><div><div className="brand-name">TrustVault<span>.</span></div><div className="brand-caption">PRIVATE DOCUMENT SPACE</div></div></div>
+            <div className="auth-intro"><span className="eyebrow"><span className="eyebrow-dot" />{registering ? "CREATE YOUR VAULT" : "WELCOME BACK"}</span><h1 id="auth-page-title">{registering ? "Create your vault." : "Sign in securely."}</h1><p>{registering ? "Create an account and begin with a protected private workspace." : "Use your registered email and password to access your workspace."}</p></div>
+            {notice && <div className={`auth-notice ${noticeError ? "is-error" : ""}`}>{noticeError ? <X size={17} /> : <CheckCircle2 size={17} />}<span>{notice}</span></div>}
+            <form className="auth-form" onSubmit={handleAuth}>
+              <label htmlFor="email">Email address</label><input id="email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" required />
+              <div className="password-label"><label htmlFor="password">Password</label><span>12–72 characters</span></div><input id="password" type="password" autoComplete={registering ? "new-password" : "current-password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" minLength={12} maxLength={72} required />
+              <button className="primary-button auth-submit" disabled={busy}>{busy ? "Please wait…" : registering ? "Create secure account" : "Sign in to TrustVault"}{!busy && <ArrowUpRight size={17} />}</button>
+            </form>
+            <div className="auth-switch">{registering ? "Already have an account?" : "New to TrustVault?"}<button type="button" onClick={() => navigatePublic(registering ? "/signin" : "/signup", registering ? "login" : "register")}>{registering ? "Sign in" : "Create an account"}</button></div>
+            <div className="auth-footer"><LockKeyhole size={15} /><span>Protected session · Private by design</span></div>
+          </section>
+        </section>
+      </main>
+    );
+  }
+
+  if (!user && (publicPath === "/features" || publicPath === "/security")) {
+    const isFeatures = publicPath === "/features";
+    const cards = isFeatures ? publicFeatureCards : publicSecurityCards;
+    return (
+      <main className="landing-page public-detail-page">
+        {publicHeader}
+        <section className="public-detail-hero reveal-on-scroll is-visible"><span className="landing-eyebrow">{isFeatures ? "THE TRUSTVAULT PRODUCT" : "THE TRUSTVAULT SECURITY MODEL"}</span><h1>{isFeatures ? "Everything needed for careful document work." : "Security that is explicit, enforceable, and explainable."}</h1><p>{isFeatures ? "A focused workspace for encrypted files, precise sharing, and clear accountability." : "TrustVault keeps each authorization decision on the server, directly beside the protected document."}</p></section>
+        <section className={`landing-section public-detail-grid ${isFeatures ? "feature-section" : "security-section"} reveal-on-scroll`} id={isFeatures ? "features" : "security"}>
+          {isFeatures ? <div className="feature-grid">{cards.map(([Icon, title, description]) => <article className="feature-card" key={title}><span><Icon size={22} /></span><h3>{title}</h3><p>{description}</p></article>)}</div> : <><div className="section-lead"><span className="landing-eyebrow">THE SECURITY PROMISE</span><h2>Built for the question that comes after access.</h2><p>Protection means more than hiding a button. Each protected operation is verified against current ownership and permission data.</p></div><div className="security-principles">{cards.map(([Icon, title, description]) => <article key={title}><Icon size={23} /><h3>{title}</h3><p>{description}</p></article>)}</div></>}
+        </section>
+        <footer className="landing-footer reveal-on-scroll"><div><div className="landing-brand"><TrustVaultLogo /></div><p>The explainable zero-trust document vault.</p></div><div className="footer-links"><a href="/features" onClick={(event) => { event.preventDefault(); navigatePublic("/features"); }}>Features</a><a href="/security" onClick={(event) => { event.preventDefault(); navigatePublic("/security"); }}>Security</a><button onClick={() => navigatePublic("/signin", "login")}>Sign In</button></div><small>© {new Date().getFullYear()} TrustVault · Privacy by design</small></footer>
+      </main>
+    );
+  }
+
   if (!user) {
     return (
       <main className="landing-page">
-        <header className="landing-nav">
-          <a className="landing-brand" href="#top"><TrustVaultLogo /></a>
-          <nav aria-label="Main navigation">
-            <a href="#features">Features</a>
-            <a href="#security">Security</a>
-            <a href="#how-it-works">How It Works</a>
-            <a href="#about">About</a>
-          </nav>
-          <div className="landing-nav-actions">
-            <button className="landing-text-button" onClick={() => { setAuthMode("login"); document.getElementById("get-started")?.scrollIntoView({ behavior: "smooth" }); }}>Sign In</button>
-            <button className="landing-small-cta" onClick={() => { setAuthMode("register"); document.getElementById("get-started")?.scrollIntoView({ behavior: "smooth" }); }}>Get Started <ArrowUpRight size={15} /></button>
-          </div>
-        </header>
+        {publicHeader}
 
         <section className="landing-hero" id="top">
-          <div className="hero-copy">
+          <div className="hero-copy landing-enter">
             <span className="landing-eyebrow"><ShieldCheck size={15} /> EXPLAINABLE ZERO-TRUST DOCUMENT VAULT</span>
             <h1>Your Documents.<br /><em>Your Control.</em><br />Your Trust.</h1>
             <p>Encrypted storage, explicit access decisions, and a transparent audit trail—so every document stays with the people you chose.</p>
             <div className="hero-actions">
-              <button className="landing-primary" onClick={() => { setAuthMode("register"); document.getElementById("get-started")?.scrollIntoView({ behavior: "smooth" }); }}>Get Started <ArrowUpRight size={17} /></button>
-              <a className="landing-secondary" href="#security">Explore Security <Shield size={17} /></a>
+              <button className="landing-primary" onClick={() => navigatePublic("/signup", "register")}>Get Started <ArrowUpRight size={17} /></button>
+              <a className="landing-secondary" href="/security" onClick={(event) => { event.preventDefault(); navigatePublic("/security"); }}>Explore Security <Shield size={17} /></a>
             </div>
             <div className="hero-proof"><span><Check size={15} /> AES-256-GCM encryption</span><span><Check size={15} /> Backend-enforced permissions</span></div>
           </div>
-          <div className="vault-visual" aria-label="Illustration of a protected document vault">
+          <div className="vault-visual landing-enter landing-enter--late" aria-label="Illustration of a protected document vault">
             <div className="visual-orbit orbit-one" /><div className="visual-orbit orbit-two" />
             <div className="vault-window">
               <div className="vault-window-bar"><span /><span /><span /><strong>TRUSTVAULT / SECURE SPACE</strong></div>
@@ -676,148 +808,30 @@ function App() {
           <span><LockKeyhole size={18} /> Encrypted at rest</span><span><Shield size={18} /> Zero-trust decisions</span><span><Activity size={18} /> Verifiable audit trail</span>
         </section>
 
-        <section className="landing-section security-section" id="security">
-          <div className="section-lead"><span className="landing-eyebrow">BUILT FOR THE MOMENT AFTER “WHO ACCESSED THIS?”</span><h2>Security you can explain.</h2><p>TrustVault keeps security decisions close to the document, where they belong—not hidden in a folder setting.</p></div>
-          <div className="security-principles">
-            <article><LockKeyhole size={23} /><h3>Encryption at rest</h3><p>Files are encrypted with AES-256-GCM and checked for integrity before they are released.</p></article>
-            <article><ShieldCheck size={23} /><h3>Zero-trust authorization</h3><p>Every download and replacement request is decided by the backend using current ownership and grants.</p></article>
-            <article><Share2 size={23} /><h3>Controlled sharing</h3><p>Owners grant named people read or write access, then revoke it when access should end.</p></article>
-            <article><Activity size={23} /><h3>Audit evidence</h3><p>Security-relevant activity is recorded in an append-only HMAC-linked audit chain.</p></article>
-          </div>
-        </section>
-
-        <section className="landing-section feature-section" id="features">
+        <section className="landing-section feature-section reveal-on-scroll" id="features">
           <div className="section-lead"><span className="landing-eyebrow">THE VAULT, NOT JUST THE FILE LIST</span><h2>Made for careful document work.</h2></div>
           <div className="feature-grid">
-            {[
-              [FileText, "Secure document storage", "Validated uploads, encrypted file storage, and protected downloads."],
-              [Share2, "Controlled sharing", "Share with registered people—document by document."],
-              [ShieldCheck, "Read and write permissions", "Give access appropriate to the work, without widening it further."],
-              [Activity, "Activity and audit trails", "Review important document and permission activity."],
-              [CheckCircle2, "Integrity verification", "Authenticated encryption and content checks protect downloaded files."],
-              [Folder, "Workspace management", "Keep owned and shared documents clear, separate, and actionable."],
-            ].map(([Icon, title, description]) => {
+            {publicFeatureCards.map(([Icon, title, description]) => {
               const FeatureIcon = Icon as typeof FileText;
               return <article className="feature-card" key={title as string}><span><FeatureIcon size={22} /></span><h3>{title as string}</h3><p>{description as string}</p></article>;
             })}
           </div>
         </section>
 
-        <section className="landing-section how-section" id="how-it-works">
+        <section className="landing-section how-section reveal-on-scroll" id="how-it-works">
           <div className="section-lead"><span className="landing-eyebrow">A CLEARER WAY TO PROTECT WORK</span><h2>Security in three deliberate steps.</h2></div>
           <div className="how-steps"><article><span>01</span><h3>Upload and protect</h3><p>Submit a supported document. TrustVault validates, encrypts, and records its arrival.</p></article><article><span>02</span><h3>Decide access</h3><p>Grant a named person read or write permission. Nothing is inherited by accident.</p></article><article><span>03</span><h3>Review the evidence</h3><p>Inspect permission changes and security activity through the audit trail.</p></article></div>
         </section>
 
-        <section className="landing-section philosophy-section" id="about">
+        <section className="landing-section philosophy-section reveal-on-scroll" id="security">
           <div className="philosophy-graphic"><div className="graphic-user">You</div><div className="graphic-line line-one" /><div className="graphic-line line-two" /><div className="graphic-doc"><FileText size={25} /><span>Encrypted<br />document</span></div><div className="graphic-audit"><Activity size={19} /><span>Audited decision</span></div></div>
-          <div className="philosophy-copy"><span className="landing-eyebrow">SECURITY-FIRST BY DEFAULT</span><h2>Every access decision should stand up to a question.</h2><p>TrustVault is designed around an uncomplicated rule: access is explicitly authorized by the server at the moment it is requested. Important actions leave traceable evidence without exposing document contents in the audit log.</p><a href="#get-started">Start with a protected workspace <ArrowUpRight size={16} /></a></div>
+          <div className="philosophy-copy" id="about"><span className="landing-eyebrow">SECURITY-FIRST BY DEFAULT</span><h2>Every access decision should stand up to a question.</h2><p>TrustVault is designed around an uncomplicated rule: access is explicitly authorized by the server at the moment it is requested. Important actions leave traceable evidence without exposing document contents in the audit log.</p><a href="/signup" onClick={(event) => { event.preventDefault(); navigatePublic("/signup", "register"); }}>Start with a protected workspace <ArrowUpRight size={16} /></a></div>
         </section>
 
-        <section className="landing-cta"><div><span className="landing-eyebrow">YOUR PRIVATE DOCUMENT SPACE</span><h2>Take Control of Your Documents.</h2><p>Secure your files. Control access. Trust every decision.</p></div><button className="landing-cta-button" onClick={() => { setAuthMode("register"); document.getElementById("get-started")?.scrollIntoView({ behavior: "smooth" }); }}>Get Started <ArrowUpRight size={18} /></button></section>
-
-        <section className="auth-card landing-auth" id="get-started">
-          <div className="auth-brand">
-            <TrustVaultLogo compact />
-            <div>
-              <div className="brand-name">
-                TrustVault<span>.</span>
-              </div>
-              <div className="brand-caption">PRIVATE DOCUMENT SPACE</div>
-            </div>
-          </div>
-
-          <div className="auth-intro">
-            <span className="eyebrow">
-              <span className="eyebrow-dot" />
-              YOUR SPACE. YOUR CONTROL.
-            </span>
-            <h1>
-              {authMode === "login"
-                ? "Welcome back."
-                : "Create your vault."}
-            </h1>
-            <p>
-              {authMode === "login"
-                ? "Your important documents, protected in one private place."
-                : "Create your account and start building your private space."}
-            </p>
-          </div>
-
-          {notice && (
-            <div className={`auth-notice ${noticeError ? "is-error" : ""}`}>
-              {noticeError ? <X size={17} /> : <CheckCircle2 size={17} />}
-              <span>{notice}</span>
-            </div>
-          )}
-
-          <form className="auth-form" onSubmit={handleAuth}>
-            <label htmlFor="email">Email address</label>
-            <input
-              id="email"
-              type="email"
-              autoComplete="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder="you@example.com"
-              required
-            />
-
-            <div className="password-label">
-              <label htmlFor="password">Password</label>
-              <span>12–72 characters</span>
-            </div>
-            <input
-              id="password"
-              type="password"
-              autoComplete={
-                authMode === "login" ? "current-password" : "new-password"
-              }
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="Enter your password"
-              minLength={12}
-              maxLength={72}
-              required
-            />
-
-            <button className="primary-button auth-submit" disabled={busy}>
-              {busy
-                ? "Please wait…"
-                : authMode === "login"
-                  ? "Sign in to TrustVault"
-                  : "Create secure account"}
-              {!busy && <ArrowUpRight size={17} />}
-            </button>
-          </form>
-
-          <div className="auth-switch">
-            {authMode === "login"
-              ? "New to TrustVault?"
-              : "Already have an account?"}
-            <button
-              type="button"
-              onClick={() => {
-                setAuthMode(authMode === "login" ? "register" : "login");
-                showMessage("");
-              }}
-            >
-              {authMode === "login" ? "Create an account" : "Sign in"}
-            </button>
-          </div>
-
-          <div className="auth-footer">
-            <LockKeyhole size={15} />
-            <span>Protected session · Private by design</span>
-          </div>
-        </section>
-
-        <div className="auth-bottom-note">
-          <Shield size={15} />
-          A calmer, safer place for what matters.
-        </div>
-        <footer className="landing-footer">
+        <section className="landing-cta reveal-on-scroll"><div><span className="landing-eyebrow">YOUR PRIVATE DOCUMENT SPACE</span><h2>Take Control of Your Documents.</h2><p>Secure your files. Control access. Trust every decision.</p></div><button className="landing-cta-button" onClick={() => navigatePublic("/signup", "register")}>Get Started <ArrowUpRight size={18} /></button></section>
+        <footer className="landing-footer reveal-on-scroll">
           <div><div className="landing-brand"><TrustVaultLogo /></div><p>The explainable zero-trust document vault.</p></div>
-          <div className="footer-links"><a href="#features">Features</a><a href="#security">Security</a><a href="#how-it-works">How It Works</a><button onClick={() => { setAuthMode("login"); document.getElementById("get-started")?.scrollIntoView({ behavior: "smooth" }); }}>Sign In</button></div>
+          <div className="footer-links"><a href="/features" onClick={(event) => { event.preventDefault(); navigatePublic("/features"); }}>Features</a><a href="/security" onClick={(event) => { event.preventDefault(); navigatePublic("/security"); }}>Security</a><a href="#how-it-works">How It Works</a><button onClick={() => navigatePublic("/signin", "login")}>Sign In</button></div>
           <small>© {new Date().getFullYear()} TrustVault · Privacy by design</small>
         </footer>
       </main>
@@ -995,6 +1009,7 @@ function App() {
             </div>
           )}
 
+          <div className="workspace-page" key={activeNav}>
           {!selectedNavExists && activeNav !== "Settings" && (
             <section className="empty-section">
               <div className="empty-section-icon">
@@ -1015,41 +1030,75 @@ function App() {
           )}
 
           {activeNav === "Settings" && (
-            <section className="empty-section">
-              <div className="empty-section-icon">
-                <Settings size={30} />
+            <section className="settings-page">
+              <div className="settings-heading">
+                <div>
+                  <span className="section-eyebrow">WORKSPACE PREFERENCES</span>
+                  <h1>Settings</h1>
+                  <p>Review your workspace identity, security posture, and quick actions.</p>
+                </div>
+                <span className="settings-protection"><span /> Protected session</span>
               </div>
-              <span className="eyebrow">YOUR PREFERENCES</span>
-              <h1>Settings</h1>
-              <p>
-                You're signed in as <strong>{user.email}</strong>.
-              </p>
-              <button
-                className="secondary-button"
-                onClick={handleLogout}
-                disabled={busy}
-              >
-                <LogOut size={17} /> Sign out
-              </button>
+
+              <div className="settings-grid">
+                <article className="settings-card settings-card--identity">
+                  <span className="settings-card-icon"><Users size={20} /></span>
+                  <div>
+                    <span className="settings-card-label">SIGNED-IN ACCOUNT</span>
+                    <h2>{user.email}</h2>
+                    <p>Your account role: <strong>{user.role?.toLowerCase() ?? "member"}</strong>.</p>
+                  </div>
+                </article>
+                <article className="settings-card settings-card--lavender">
+                  <span className="settings-card-icon"><ShieldCheck size={20} /></span>
+                  <div>
+                    <span className="settings-card-label">SECURITY MODEL</span>
+                    <h2>Server-verified access</h2>
+                    <p>Protected actions are authorized by the backend using current ownership and grants.</p>
+                  </div>
+                </article>
+                <article className="settings-card">
+                  <span className="settings-card-icon"><LockKeyhole size={20} /></span>
+                  <div>
+                    <span className="settings-card-label">STORAGE PROTECTION</span>
+                    <h2>Encrypted document vault</h2>
+                    <p>Supported files are encrypted before they are stored and verified before download.</p>
+                  </div>
+                </article>
+              </div>
+
+              <div className="settings-actions-card">
+                <div>
+                  <span className="section-eyebrow">WORKSPACE ACTIONS</span>
+                  <h2>Continue securely</h2>
+                  <p>Use these shortcuts to review documents and the evidence behind access decisions.</p>
+                </div>
+                <div className="settings-action-list">
+                  <button className="secondary-button" type="button" onClick={() => setActiveNav("My Documents")}>
+                    <FolderOpen size={17} /> Open my documents
+                  </button>
+                  <button className="secondary-button" type="button" onClick={() => setActiveNav("Audit Trail")}>
+                    <Activity size={17} /> Review audit trail
+                  </button>
+                  <button className="settings-signout-button" type="button" onClick={handleLogout} disabled={busy}>
+                    <LogOut size={17} /> Sign out
+                  </button>
+                </div>
+              </div>
             </section>
           )}
 
           {(isOverview || isMyDocuments) && (
             <>
+              {isMyDocuments && (
               <section className="welcome-row">
                 <div>
                   <div className="eyebrow">
                     <span className="eyebrow-line" />
                     YOUR PRIVATE SPACE
                   </div>
-                  <h1>
-                    {isOverview ? "Your space, secured." : "My documents."}
-                  </h1>
-                  <p className="subtitle">
-                    {isOverview
-                      ? "A little more peace of mind starts here."
-                      : "Every important file, organised in one private place."}
-                  </p>
+                  <h1>My documents.</h1>
+                  <p className="subtitle">Every important file, organised in one private place.</p>
                 </div>
                 <button
                   className="primary-button upload-top-button"
@@ -1058,9 +1107,19 @@ function App() {
                   <Plus size={18} /> Upload document
                 </button>
               </section>
+              )}
 
               {isOverview && (
-                <section className="hero-banner">
+                <>
+                <section className="overview-welcome">
+                  <div>
+                    <div className="eyebrow"><span className="eyebrow-line" />YOUR PRIVATE SPACE</div>
+                    <h1>Your space, secured.</h1>
+                    <p className="subtitle">A calm, clear view of the safeguards around your workspace.</p>
+                  </div>
+                  <span className="overview-status"><span /> All systems protected</span>
+                </section>
+                <section className="hero-banner overview-hero">
                   <div className="hero-copy">
                     <span className="hero-kicker">
                       <Sparkles size={14} /> SECURITY, MADE SIMPLE
@@ -1096,8 +1155,58 @@ function App() {
                     PRIVATE BY DESIGN
                   </div>
                 </section>
+                <section className="overview-signal-grid" aria-label="Workspace security summary">
+                  <article className="overview-signal-card overview-signal-card--lavender">
+                    <span className="overview-signal-icon"><ShieldCheck size={19} /></span>
+                    <div><span>ACCESS CONTROL</span><h2>Server-verified permissions</h2><p>Every protected document request is evaluated against ownership and active grants.</p></div>
+                  </article>
+                  <article className="overview-signal-card">
+                    <span className="overview-signal-icon"><LockKeyhole size={19} /></span>
+                    <div><span>VAULT PROTECTION</span><h2>Encrypted by design</h2><p>Files are protected in encrypted storage and checked before they are released.</p></div>
+                  </article>
+                  <article className="overview-signal-card overview-signal-card--action">
+                    <span className="overview-signal-icon"><Activity size={19} /></span>
+                    <div><span>ACCOUNTABILITY</span><h2>Review the evidence</h2><p>Inspect recorded security activity and verify the audit chain when you need it.</p><button className="signal-link" onClick={() => setActiveNav("Audit Trail")}>Open Audit Trail <ArrowUpRight size={15} /></button></div>
+                  </article>
+                </section>
+                <section className="vault-command-center" aria-label="My Vault command center">
+                  <div className="vault-command-copy">
+                    <span className="section-eyebrow">MY VAULT</span>
+                    <h2>Keep your workspace intentional.</h2>
+                    <p>Use your vault as the starting point for document organisation, access decisions, and accountable activity review.</p>
+                  </div>
+                  <div className="vault-snapshot-grid">
+                    <article className="vault-snapshot-card">
+                      <span className="vault-snapshot-icon"><FolderOpen size={18} /></span>
+                      <span>DOCUMENTS</span>
+                      <strong>{documents.length}</strong>
+                      <small>{documents.length === 1 ? "file in your vault" : "files in your vault"}</small>
+                    </article>
+                    <article className="vault-snapshot-card vault-snapshot-card--lavender">
+                      <span className="vault-snapshot-icon"><HardDrive size={18} /></span>
+                      <span>VAULT SPACE</span>
+                      <strong>{(totalBytes / (1024 * 1024)).toFixed(2)}<em> MB</em></strong>
+                      <small>{storagePercent.toFixed(1)}% of the displayed capacity</small>
+                    </article>
+                    <article className="vault-snapshot-card">
+                      <span className="vault-snapshot-icon"><Folder size={18} /></span>
+                      <span>ORGANISATION</span>
+                      <strong>{categoryCount}</strong>
+                      <small>{categoryCount === 1 ? "document category" : "document categories"}</small>
+                    </article>
+                  </div>
+                  <div className="vault-command-actions">
+                    <button className="primary-button" type="button" onClick={() => setShowUpload(true)}><Plus size={17} /> Add document</button>
+                    <button className="secondary-button" type="button" onClick={() => setActiveNav("Shared by me")}><Share2 size={17} /> Manage sharing</button>
+                    <button className="secondary-button" type="button" onClick={() => setActiveNav("Audit Trail")}><Activity size={17} /> Review activity</button>
+                  </div>
+                </section>
+                <div className="overview-primary-action"><button className="secondary-button" onClick={() => setActiveNav("My Documents")}><FolderOpen size={17} /> Open My Documents</button></div>
+                </>
               )}
 
+              {isMyDocuments && (
+              <>
               <section className="stats-grid">
                 <article className="stat-card">
                   <div className="stat-top">
@@ -1164,14 +1273,8 @@ function App() {
                 <div className="section-heading">
                   <div>
                     <div className="section-eyebrow">YOUR COLLECTION</div>
-                    <h2>{isOverview ? "Recent documents" : "All documents"}</h2>
-                    <p>
-                      {isOverview
-                        ? "Your files, right where you need them."
-                        : `${documents.length} ${
-                            documents.length === 1 ? "file" : "files"
-                          } in your vault`}
-                    </p>
+                    <h2>All documents</h2>
+                    <p>{documents.length} {documents.length === 1 ? "file" : "files"} in your vault</p>
                   </div>
                   <div className="document-actions">
                     <label className="search-box">
@@ -1246,10 +1349,7 @@ function App() {
                         </tr>
                       </thead>
                       <tbody>
-                        {(isOverview
-                          ? filteredDocuments.slice(0, 5)
-                          : filteredDocuments
-                        ).map((doc) => {
+                        {filteredDocuments.map((doc) => {
                           const kind = getFileKind(doc.mime);
                           const FileIcon = kind.icon;
 
@@ -1269,12 +1369,13 @@ function App() {
                               <td>
                                 <span className="file-type-pill">{kind.label}</span>
                               </td>
-                              <td className="table-muted">{doc.isOwner ? <select className="category-select" aria-label={`Category for ${doc.name}`} value={doc.category} onChange={(event) => void handleCategoryChange(doc, event.target.value)}><option>Uncategorized</option><option>Contracts</option><option>Finance</option><option>HR</option><option>Operations</option><option>Personal</option></select> : doc.category}</td>
+                              <td className="table-muted category-cell">{doc.isOwner ? <select className="category-select" aria-label={`Category for ${doc.name}`} value={doc.category} onChange={(event) => void handleCategoryChange(doc, event.target.value)}><option>Uncategorized</option><option>Contracts</option><option>Finance</option><option>HR</option><option>Operations</option><option>Personal</option></select> : <span className="category-pill">{doc.category || "Uncategorized"}</span>}</td>
                               <td className="table-muted">{formatSize(doc.size)}</td>
                               <td className="table-muted">
                                 {formatDate(doc.createdAt)}
                               </td>
                               <td>
+                                <div className="document-row-actions">
                                 {doc.isOwner && (
                                   <label className="download-button replace-file-button" title={`Replace ${doc.name}`}>
                                     <ArrowUpRight size={17} />
@@ -1306,21 +1407,13 @@ function App() {
                                     <Trash2 size={16} />
                                   </button>
                                 )}
+                                </div>
                               </td>
                             </tr>
                           );
                         })}
                       </tbody>
                     </table>
-                    {isOverview && filteredDocuments.length > 5 && (
-                      <button
-                        className="view-all-button"
-                        onClick={() => setActiveNav("My Documents")}
-                      >
-                        View all {filteredDocuments.length} documents
-                        <ArrowUpRight size={16} />
-                      </button>
-                    )}
                   </div>
                 )}
               </section>
@@ -1331,17 +1424,19 @@ function App() {
                   <LockKeyhole size={13} /> Your private document space
                 </span>
               </footer>
+              </>
+              )}
             </>
           )}
 
         
 {activeNav === "Shared with me" && (
-  <section className="share-panel">
-    <div className="section-heading">
+  <section className="collaboration-page">
+    <div className="collaboration-heading">
       <div>
         <span className="section-eyebrow">COLLABORATION</span>
         <h1>Shared with me</h1>
-        <p>Documents other people have shared with you.</p>
+        <p>Documents shared directly with your account. Your current permission is shown on every file.</p>
       </div>
       <button
         className="secondary-button"
@@ -1354,70 +1449,74 @@ function App() {
     </div>
 
     {loadingShared ? (
-      <p>Loading shared documents...</p>
+      <div className="collaboration-loading"><span className="loading-spinner" /> Loading shared documents…</div>
     ) : sharedDocuments.length === 0 ? (
-      <div className="empty-section">
-        <div className="empty-section-icon">
+      <div className="collaboration-empty">
+        <div className="collaboration-empty-icon">
           <Users size={30} />
         </div>
         <h2>No shared documents yet</h2>
         <p>Documents shared with your account will appear here.</p>
       </div>
     ) : (
-      <div className="document-grid">
+      <div className="shared-document-grid">
         {sharedDocuments.map((doc) => (
-          <article className="document-card" key={doc.grantId}>
-            <div className="document-card-icon">
-              <FileText size={24} />
+          <article className="shared-document-card" key={doc.grantId}>
+            <div className="shared-document-card-top">
+              <div className="shared-document-icon">
+                <FileText size={22} />
+              </div>
+              <span className={`permission-badge ${doc.canEdit ? "permission-badge--write" : "permission-badge--read"}`}>
+                {doc.canEdit ? "Write access" : "Read only"}
+              </span>
             </div>
-            <h2>{doc.documentName}</h2>
-            <p>Shared by: {doc.ownerEmail}</p>
-            <p>
-              Permission: {doc.canEdit ? "Can edit" : "Read only"}
-            </p>
-            <p>
-              Shared on: {new Date(doc.sharedAt).toLocaleDateString()}
-            </p>
-            {doc.expiresAt && (
-              <p>
-                Expires: {new Date(doc.expiresAt).toLocaleDateString()}
-              </p>
-            )}
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() =>
-                void handleDownload({
-                  id: doc.documentId,
-                  isOwner: false,
-                  name: doc.documentName,
-                  mime: "",
-                  size: 0,
-                  createdAt: doc.sharedAt,
-                  category: "Shared",
-                  ownerEmail: doc.ownerEmail,
-                })
-              }
-            >
-              <ArrowDownToLine size={16} />
-              Download
-            </button>
+            <div className="shared-document-card-copy">
+              <span className="shared-document-label">SHARED DOCUMENT</span>
+              <h2 title={doc.documentName}>{doc.documentName}</h2>
+            </div>
+            <dl className="shared-document-meta">
+              <div><dt>Owner</dt><dd>{doc.ownerEmail}</dd></div>
+              <div><dt>Shared</dt><dd>{formatDate(doc.sharedAt)}</dd></div>
+              <div><dt>Access</dt><dd>{doc.canEdit ? "Replace contents allowed" : "View and download only"}</dd></div>
+              {doc.expiresAt && <div><dt>Expires</dt><dd>{formatDate(doc.expiresAt)}</dd></div>}
+            </dl>
+            <div className="shared-document-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() =>
+                  void handleDownload({
+                    id: doc.documentId,
+                    isOwner: false,
+                    name: doc.documentName,
+                    mime: "",
+                    size: 0,
+                    createdAt: doc.sharedAt,
+                    category: "Shared",
+                    ownerEmail: doc.ownerEmail,
+                  })
+                }
+              >
+                <ArrowDownToLine size={16} />
+                Download
+              </button>
+              {doc.canEdit && (
+                <label className="primary-button replace-document-button">
+                  <ArrowUpRight size={16} />
+                  Replace
+                  <input
+                    type="file"
+                    accept=".pdf,.png,.jpg,.jpeg,.txt,application/pdf,image/png,image/jpeg,text/plain"
+                    disabled={busy}
+                    onChange={(event) =>
+                      void handleReplacementSelection(event, doc.documentId, doc.documentName)
+                    }
+                  />
+                </label>
+              )}
+            </div>
             {doc.canEdit && (
-              <label className="secondary-button replace-document-button">
-                <ArrowUpRight size={16} />
-                Replace contents
-                <input
-                  type="file"
-                  accept=".pdf,.png,.jpg,.jpeg,.txt,application/pdf,image/png,image/jpeg,text/plain"
-                  disabled={busy}
-                  onChange={(event) =>
-                    void handleReplacementSelection(event, doc.documentId, doc.documentName)
-                  }
-                />
-              </label>
-            )}
-            {doc.canEdit && (
-              <p className="replacement-note">Replacing content creates fresh encrypted storage; the file is not edited in-browser.</p>
+              <p className="replacement-note">Replacing creates a newly validated and encrypted version; files are not edited in the browser.</p>
             )}
           </article>
         ))}
@@ -1426,20 +1525,32 @@ function App() {
   </section>
 )}
 
-
                     {activeNav === "Shared by me" && (
-            <section className="share-panel">
-              <div className="section-heading">
+            <section className="collaboration-page">
+              <div className="collaboration-heading">
                 <div>
                   <span className="section-eyebrow">COLLABORATION</span>
                   <h1>Shared by me</h1>
-                  <p>Manage who can access your documents.</p>
+                  <p>Grant precise access to named people and revoke it the moment it is no longer needed.</p>
                 </div>
               </div>
 
-              <div className="share-form-card">
-                <h2>Share a document</h2>
-                <form onSubmit={handleShare} className="share-form">
+              <div className="sharing-workspace">
+                <aside className="sharing-guidance">
+                  <span className="sharing-guidance-icon"><ShieldCheck size={21} /></span>
+                  <span className="settings-card-label">EXPLICIT ACCESS</span>
+                  <h2>Share only what is needed.</h2>
+                  <p>Read-only recipients can download the current document. Write-enabled recipients can securely replace its contents.</p>
+                  <ul>
+                    <li><Check size={15} /> Access is evaluated on every request.</li>
+                    <li><Check size={15} /> Revocation takes effect immediately.</li>
+                    <li><Check size={15} /> Permission changes are audited.</li>
+                  </ul>
+                </aside>
+
+                <div className="share-form-card">
+                  <div className="share-form-card-heading"><span className="share-step">01</span><div><h2>Grant access</h2><p>Choose a document, recipient, and permission level.</p></div></div>
+                  <form onSubmit={handleShare} className="share-form">
                   <label htmlFor="share-document">Choose document</label>
                   <select
                     id="share-document"
@@ -1496,11 +1607,12 @@ function App() {
                     <Share2 size={17} />
                     {busy ? "Please wait…" : "Share document"}
                   </button>
-                </form>
+                  </form>
+                </div>
               </div>
 
-              <div className="share-form-card">
-                <h2>Access permissions</h2>
+              <div className="share-form-card permissions-card">
+                <div className="share-form-card-heading"><span className="share-step">02</span><div><h2>Current access</h2><p>Review every active and revoked recipient for the selected document.</p></div></div>
 
                 {!sharingDocumentId ? (
                   <p>Select a document above to view its permissions.</p>
@@ -1523,8 +1635,8 @@ function App() {
                         {grants.map((grant) => (
                           <tr key={grant.id}>
                             <td>{grant.email}</td>
-                            <td>{grant.canEdit ? "Can edit" : "Read only"}</td>
-                            <td>{grant.active ? "Active" : "Revoked"}</td>
+                            <td><span className={`permission-badge ${grant.canEdit ? "permission-badge--write" : "permission-badge--read"}`}>{grant.canEdit ? "Write access" : "Read only"}</span></td>
+                            <td><span className={`grant-status ${grant.active ? "grant-status--active" : "grant-status--revoked"}`}>{grant.active ? "Active" : "Revoked"}</span></td>
                             <td>
                               {grant.active && (
                                 <button
@@ -1533,7 +1645,7 @@ function App() {
                                   disabled={busy}
                                   onClick={() => void handleRevoke(grant.id)}
                                 >
-                                  Revoke
+                                  Revoke access
                                 </button>
                               )}
                             </td>
@@ -1552,7 +1664,7 @@ function App() {
               <div className="section-heading"><div><span className="section-eyebrow">ADMINISTRATION</span><h1>Security dashboard</h1><p>Global activity and current access posture.</p></div><button className="secondary-button" onClick={() => void loadAdminOverview()} disabled={loadingAdmin}>{loadingAdmin ? "Refreshing…" : "Refresh"}</button></div>
               {adminOverview && <>
                 <div className="stats-grid admin-stats"><article className="stat-card"><span>ACTIVE USERS</span><strong>{adminOverview.metrics.activeUsers}</strong></article><article className="stat-card"><span>ACTIVE DOCUMENTS</span><strong>{adminOverview.metrics.activeDocuments}</strong></article><article className="stat-card"><span>ACTIVE GRANTS</span><strong>{adminOverview.metrics.activeGrants}</strong></article><article className="stat-card"><span>DENIED · 24H</span><strong>{adminOverview.metrics.deniedLast24Hours}</strong></article></div>
-                <div className="audit-events"><div className="audit-events-heading"><div><h2>Recent security activity</h2><p>Newest events across the workspace.</p></div></div><div className="audit-table-wrap"><table className="audit-table"><thead><tr><th>EVENT</th><th>ENTITY</th><th>DATE &amp; TIME</th><th>DETAILS</th></tr></thead><tbody>{adminOverview.events.map((event) => <tr key={event.id}><td><strong>{event.eventType.replace(/_/g, " ")}</strong></td><td>{event.entityType}</td><td>{new Date(event.createdAt).toLocaleString()}</td><td>{Object.entries(event.metadata).map(([key,value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`).join(" · ") || "—"}</td></tr>)}</tbody></table></div></div>
+                <div className="audit-events"><div className="audit-events-heading"><div><h2>Recent security activity</h2><p>Newest events across the workspace.</p></div></div><div className="audit-table-wrap"><table className="audit-table"><thead><tr><th>EVENT</th><th>ENTITY</th><th>DATE &amp; TIME</th><th>DETAILS</th></tr></thead><tbody>{adminOverview.events.map((event) => <tr key={event.id}><td><strong>{formatAuditEventType(event.eventType)}</strong></td><td>{event.entityType}</td><td>{new Date(event.createdAt).toLocaleString()}</td><td>{formatAuditDetails(event.metadata)}</td></tr>)}</tbody></table></div></div>
               </>}
             </section>
           )}
@@ -1625,6 +1737,15 @@ function App() {
 
       {loadingAudit ? (
         <p className="audit-empty">Loading audit events...</p>
+      ) : auditError ? (
+        <div className="audit-empty audit-error" role="alert">
+          <X size={28} />
+          <h3>Audit events could not be loaded</h3>
+          <p>{auditError}</p>
+          <button className="secondary-button" type="button" onClick={() => void loadAuditEvents()}>
+            Try again
+          </button>
+        </div>
       ) : auditEvents.length === 0 ? (
         <div className="audit-empty">
           <Activity size={28} />
@@ -1646,23 +1767,11 @@ function App() {
               {auditEvents.map((event) => (
                 <tr key={event.id}>
                   <td>
-                    <strong>{event.eventType.replace(/_/g, " ")}</strong>
+                    <strong>{formatAuditEventType(event.eventType)}</strong>
                   </td>
                   <td>{event.entityType}</td>
                   <td>{new Date(event.createdAt).toLocaleString()}</td>
-                  <td>
-                    {Object.keys(event.metadata).length > 0
-                      ? Object.entries(event.metadata)
-                          .map(([key, value]) => {
-                            const detail =
-                              typeof value === "string"
-                                ? value
-                                : JSON.stringify(value);
-                            return `${key}: ${detail}`;
-                          })
-                          .join(" · ")
-                      : "—"}
-                  </td>
+                  <td>{formatAuditDetails(event.metadata)}</td>
                 </tr>
               ))}
             </tbody>
@@ -1672,6 +1781,7 @@ function App() {
     </div>
   </section>
 )}
+          </div>
         </div>
       </main>
 

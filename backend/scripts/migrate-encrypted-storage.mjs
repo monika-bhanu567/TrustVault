@@ -14,12 +14,20 @@ try {
   const result = await pool.query(`SELECT id, storage_key, encryption_iv, encryption_tag, content_sha256 FROM documents WHERE status = 'ACTIVE' ORDER BY created_at`);
   let migrated = 0;
   const missing = [];
+  const failedIntegrity = [];
+  const failedStorage = [];
   for (const document of result.rows) {
     const file = path.join(root, `${document.storage_key}.enc`);
     try { await access(file, constants.R_OK); }
     catch { missing.push(document.id); continue; }
-    await storage.migrateLocalCiphertext(document.storage_key, document.encryption_iv, document.encryption_tag, document.content_sha256);
-    migrated += 1;
+    try {
+      await storage.migrateLocalCiphertext(document.storage_key, document.encryption_iv, document.encryption_tag, document.content_sha256);
+      migrated += 1;
+    } catch (error) {
+      const entry = { id: document.id, reason: error instanceof Error ? error.message : "MIGRATION_FAILURE" };
+      if (entry.reason === "CONTENT_INTEGRITY_FAILURE") failedIntegrity.push(entry);
+      else failedStorage.push(entry);
+    }
   }
   if (quarantineMissing && missing.length) {
     const client = await pool.connect();
@@ -33,6 +41,12 @@ try {
     } catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; }
     finally { client.release(); }
   }
-  console.log(JSON.stringify({ migrated, missingCiphertextRecords: missing.length, quarantined: quarantineMissing ? missing.length : 0 }));
-  if (missing.length && !quarantineMissing) process.exitCode = 2;
+  console.log(JSON.stringify({
+    migrated,
+    missingCiphertextRecords: missing.length,
+    integrityFailures: failedIntegrity,
+    storageFailures: failedStorage,
+    quarantined: quarantineMissing ? missing.length : 0
+  }));
+  if (missing.length || failedIntegrity.length || failedStorage.length) process.exitCode = 2;
 } finally { await pool.end(); }
