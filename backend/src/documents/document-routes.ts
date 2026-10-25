@@ -36,9 +36,11 @@ const UUID_PATTERN =
 interface DocumentRow {
   id: string;
   owner_id: string;
+  owner_email: string;
   original_name: string;
   mime_type: string;
   size_bytes: string;
+  category: string;
   created_at: Date;
 }
 
@@ -314,17 +316,28 @@ export async function registerDocumentRoutes(
     }
   });
 
-  app.get("/documents", async (request, reply) => {
+  app.get<{ Querystring: { q?: string; owner?: string; category?: string; from?: string; to?: string } }>("/documents", async (request, reply) => {
     const auth = await guard.validate(request.cookies[COOKIE_NAME]);
 
     if (!auth.valid) {
       return reply.code(401).send({ error: "Unauthorized" });
     }
 
+    const query = request.query;
+    const q = query.q?.trim() ?? "";
+    const owner = query.owner?.trim().toLowerCase() ?? "";
+    const category = query.category?.trim() ?? "";
+    const from = query.from ? new Date(query.from) : null;
+    const to = query.to ? new Date(query.to) : null;
+    if ((from && !Number.isFinite(from.getTime())) || (to && !Number.isFinite(to.getTime()))) {
+      return reply.code(400).send({ error: "Invalid date filter" });
+    }
+
     const result = await pool.query<DocumentRow>(
-      `SELECT DISTINCT d.id, d.owner_id, d.original_name, d.mime_type,
-              d.size_bytes, d.created_at
+      `SELECT DISTINCT d.id, d.owner_id, u.email AS owner_email, d.original_name, d.mime_type,
+              d.size_bytes, d.category, d.created_at
        FROM documents d
+       JOIN users u ON u.id = d.owner_id
        LEFT JOIN document_grants g
          ON g.document_id = d.id
         AND g.user_id = $1
@@ -333,16 +346,48 @@ export async function registerDocumentRoutes(
         AND (g.expires_at IS NULL OR g.expires_at > NOW())
        WHERE d.status = 'ACTIVE'
          AND (d.owner_id = $1 OR g.id IS NOT NULL)
+         AND ($2 = '' OR d.original_name ILIKE '%' || $2 || '%')
+         AND ($3 = '' OR u.email ILIKE '%' || $3 || '%')
+         AND ($4 = '' OR d.category = $4)
+         AND ($5::timestamptz IS NULL OR d.created_at >= $5)
+         AND ($6::timestamptz IS NULL OR d.created_at < $6 + INTERVAL '1 day')
        ORDER BY d.created_at DESC`,
-      [auth.user.id]
+      [auth.user.id, q, owner, category, from?.toISOString() ?? null, to?.toISOString() ?? null]
     );
 
     return {
-      documents: result.rows.map(({ owner_id, ...document }) => ({
+      documents: result.rows.map(({ owner_id, owner_email, ...document }) => ({
         ...document,
-        isOwner: owner_id === auth.user.id
+        isOwner: owner_id === auth.user.id,
+        ownerEmail: owner_email
       }))
     };
+  });
+
+  app.patch<{ Params: { id: string }; Body: { category?: string } }>("/documents/:id/category", async (request, reply) => {
+    const auth = await guard.validate(request.cookies[COOKIE_NAME]);
+    if (!auth.valid) return reply.code(401).send({ error: "Unauthorized" });
+    const category = request.body?.category?.trim();
+    if (!UUID_PATTERN.test(request.params.id) || !category || category.length > 80) {
+      return reply.code(400).send({ error: "Invalid category update" });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<{ id: string }>(
+        `UPDATE documents SET category = $1, updated_at = NOW()
+         WHERE id = $2 AND owner_id = $3 AND status = 'ACTIVE' RETURNING id`,
+        [category, request.params.id, auth.user.id]
+      );
+      if (!result.rows[0]) { await client.query("ROLLBACK"); return reply.code(404).send({ error: "Document not found" }); }
+      await appendAuditEventWithClient(client, { eventType: "DOCUMENT_CATEGORY_UPDATED", actorId: auth.user.id, entityType: "document", entityId: request.params.id, metadata: { category } });
+      await client.query("COMMIT");
+      return { category };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      request.log.error({ err: error }, "Category update failed");
+      return reply.code(500).send({ error: "Unable to update category" });
+    } finally { client.release(); }
   });
 
   app.get<{ Params: { id: string } }>(

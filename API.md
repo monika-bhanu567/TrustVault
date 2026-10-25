@@ -9,6 +9,9 @@ All protected endpoints require the `trustvault_session` HTTP-only session cooki
 | `GET /documents` | Owner or current read/edit grantee | Lists documents currently accessible to the caller. |
 | `GET /documents/:id/download` | Owner or active read grantee | Re-evaluates policy, writes audit evidence, validates ciphertext integrity, then streams a temporary plaintext file. |
 | `POST /documents/:id/content` | Owner or active edit grantee | Validates and replaces contents using new ciphertext; read-only, expired, and revoked grants are denied. |
+| `GET /documents?q=&owner=&category=&from=&to=` | Owner or current read/edit grantee | Searches only documents already authorized for the caller; filters are applied server-side. |
+| `PATCH /documents/:id/category` | Active owner only | Changes an owned document's category and records the change in the audit trail. |
+| `GET /admin/overview` | Active administrator only | Returns global security metrics and recent activity; it does not grant document content access. |
 | `DELETE /documents/:id` | Active owner only | Soft-deletes the database record, writes `DOCUMENT_DELETED`, then removes ciphertext after the transaction commits. |
 | `POST /documents/:id/grants` | Active owner only | Creates/updates a named recipient's read/edit grant. |
 | `GET /documents/:id/grants` | Active owner only | Shows access history for the caller's document. |

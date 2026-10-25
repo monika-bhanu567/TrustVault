@@ -44,6 +44,8 @@ type ApiDocument = {
   mime_type: string;
   size_bytes: number | string;
   created_at: string;
+  category: string;
+  ownerEmail: string;
 };
 
 type DocumentItem = {
@@ -53,6 +55,8 @@ type DocumentItem = {
   mime: string;
   size: number;
   createdAt: string;
+  category: string;
+  ownerEmail: string;
 };
 
 type DocumentGrant = {
@@ -94,6 +98,11 @@ type AuditVerification = {
   reason?: string;
 };
 
+type AdminOverview = {
+  metrics: { activeUsers: number; activeDocuments: number; activeGrants: number; deniedLast24Hours: number };
+  events: AuditEvent[];
+};
+
 const navigation = [
   { label: "Overview", icon: LayoutDashboard },
   { label: "My Documents", icon: FolderOpen },
@@ -102,11 +111,13 @@ const navigation = [
   { label: "Audit Trail", icon: Activity },
 ];
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "/api").replace(/\/$/, "");
+
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const isFormData = options.body instanceof FormData;
   const hasJsonBody = options.body != null && !isFormData;
 
-  const response = await fetch(`/api${path}`, {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
     credentials: "include",
     headers: {
@@ -179,6 +190,10 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
   const [mobileSidebar, setMobileSidebar] = useState(false);
+  const [ownerFilter, setOwnerFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("");
+  const [adminOverview, setAdminOverview] = useState<AdminOverview | null>(null);
+  const [loadingAdmin, setLoadingAdmin] = useState(false);
 
   const showMessage = (message: string, isError = false) => {
     setNotice(message);
@@ -197,6 +212,8 @@ function App() {
           mime: doc.mime_type,
           size: Number(doc.size_bytes),
           createdAt: doc.created_at,
+          category: doc.category,
+          ownerEmail: doc.ownerEmail,
         })),
       );
     } finally {
@@ -229,10 +246,21 @@ function App() {
     });
   }, [user, loadDocuments]);
 
+  const loadAdminOverview = useCallback(async () => {
+    setLoadingAdmin(true);
+    try { setAdminOverview(await api<AdminOverview>("/admin/overview")); }
+    catch (error) { showMessage(error instanceof Error ? error.message : "Unable to load administration data.", true); }
+    finally { setLoadingAdmin(false); }
+  }, []);
+
   useEffect(() => {
    if (!user || activeNav !== "Shared with me") return;
    void loadSharedDocuments();
 }, [user, activeNav]);
+
+  useEffect(() => {
+    if (user?.role === "ADMIN" && activeNav === "Admin Dashboard") void loadAdminOverview();
+  }, [user, activeNav, loadAdminOverview]);
   
   useEffect(() => {
   if (!user || activeNav !== "Audit Trail") return;
@@ -244,9 +272,11 @@ function App() {
   const filteredDocuments = useMemo(
     () =>
       documents.filter((doc) =>
-        doc.name.toLowerCase().includes(search.toLowerCase().trim()),
+        doc.name.toLowerCase().includes(search.toLowerCase().trim()) &&
+        (!ownerFilter || doc.ownerEmail.toLowerCase().includes(ownerFilter.toLowerCase())) &&
+        (!categoryFilter || doc.category === categoryFilter),
       ),
-    [documents, search],
+    [documents, search, ownerFilter, categoryFilter],
   );
 
   const totalBytes = documents.reduce((total, doc) => total + doc.size, 0);
@@ -544,7 +574,7 @@ function App() {
   async function handleDownload(doc: DocumentItem) {
     try {
       const response = await fetch(
-        `/api/documents/${encodeURIComponent(doc.id)}/download`,
+        `${API_BASE_URL}/documents/${encodeURIComponent(doc.id)}/download`,
         { credentials: "include" },
       );
 
@@ -590,13 +620,104 @@ function App() {
     }
   }
 
+  async function handleCategoryChange(doc: DocumentItem, category: string) {
+    if (category === doc.category) return;
+    try {
+      await api(`/documents/${encodeURIComponent(doc.id)}/category`, { method: "PATCH", body: JSON.stringify({ category }) });
+      setDocuments((current) => current.map((item) => item.id === doc.id ? { ...item, category } : item));
+      showMessage(`${doc.name} moved to ${category}.`);
+    } catch (error) {
+      showMessage(error instanceof Error ? error.message : "Unable to update category.", true);
+    }
+  }
+
   if (!user) {
     return (
-      <main className="auth-screen">
-        <div className="auth-decoration auth-decoration-one" />
-        <div className="auth-decoration auth-decoration-two" />
+      <main className="landing-page">
+        <header className="landing-nav">
+          <a className="landing-brand" href="#top" aria-label="TrustVault home">
+            <span className="brand-mark"><ShieldCheck size={22} /></span>
+            <span>TrustVault<span>.</span></span>
+          </a>
+          <nav aria-label="Main navigation">
+            <a href="#features">Features</a>
+            <a href="#security">Security</a>
+            <a href="#how-it-works">How It Works</a>
+            <a href="#about">About</a>
+          </nav>
+          <div className="landing-nav-actions">
+            <button className="landing-text-button" onClick={() => { setAuthMode("login"); document.getElementById("get-started")?.scrollIntoView({ behavior: "smooth" }); }}>Sign In</button>
+            <button className="landing-small-cta" onClick={() => { setAuthMode("register"); document.getElementById("get-started")?.scrollIntoView({ behavior: "smooth" }); }}>Get Started <ArrowUpRight size={15} /></button>
+          </div>
+        </header>
 
-        <section className="auth-card">
+        <section className="landing-hero" id="top">
+          <div className="hero-copy">
+            <span className="landing-eyebrow"><ShieldCheck size={15} /> EXPLAINABLE ZERO-TRUST DOCUMENT VAULT</span>
+            <h1>Your Documents.<br /><em>Your Control.</em><br />Your Trust.</h1>
+            <p>Encrypted storage, explicit access decisions, and a transparent audit trail—so every document stays with the people you chose.</p>
+            <div className="hero-actions">
+              <button className="landing-primary" onClick={() => { setAuthMode("register"); document.getElementById("get-started")?.scrollIntoView({ behavior: "smooth" }); }}>Get Started <ArrowUpRight size={17} /></button>
+              <a className="landing-secondary" href="#security">Explore Security <Shield size={17} /></a>
+            </div>
+            <div className="hero-proof"><span><Check size={15} /> AES-256-GCM encryption</span><span><Check size={15} /> Backend-enforced permissions</span></div>
+          </div>
+          <div className="vault-visual" aria-label="Illustration of a protected document vault">
+            <div className="visual-orbit orbit-one" /><div className="visual-orbit orbit-two" />
+            <div className="vault-window">
+              <div className="vault-window-bar"><span /><span /><span /><strong>TRUSTVAULT / SECURE SPACE</strong></div>
+              <div className="vault-file-row"><span className="vault-file-icon"><FileText size={21} /></span><div><strong>offer_letter_15060.pdf</strong><small>Encrypted · Integrity verified</small></div><span className="vault-lock"><LockKeyhole size={16} /></span></div>
+              <div className="vault-grant"><span className="vault-avatar">M</span><div><strong>Access decision</strong><small>Read &amp; write · Explicit grant</small></div><CheckCircle2 size={19} /></div>
+              <div className="vault-audit"><Activity size={16} /><span>Audit event recorded</span><small>now</small></div>
+            </div>
+            <div className="visual-badge"><ShieldCheck size={18} /> Protected by design</div>
+          </div>
+        </section>
+
+        <section className="trust-strip" aria-label="TrustVault security principles">
+          <span><LockKeyhole size={18} /> Encrypted at rest</span><span><Shield size={18} /> Zero-trust decisions</span><span><Activity size={18} /> Verifiable audit trail</span>
+        </section>
+
+        <section className="landing-section security-section" id="security">
+          <div className="section-lead"><span className="landing-eyebrow">BUILT FOR THE MOMENT AFTER “WHO ACCESSED THIS?”</span><h2>Security you can explain.</h2><p>TrustVault keeps security decisions close to the document, where they belong—not hidden in a folder setting.</p></div>
+          <div className="security-principles">
+            <article><LockKeyhole size={23} /><h3>Encryption at rest</h3><p>Files are encrypted with AES-256-GCM and checked for integrity before they are released.</p></article>
+            <article><ShieldCheck size={23} /><h3>Zero-trust authorization</h3><p>Every download and replacement request is decided by the backend using current ownership and grants.</p></article>
+            <article><Share2 size={23} /><h3>Controlled sharing</h3><p>Owners grant named people read or write access, then revoke it when access should end.</p></article>
+            <article><Activity size={23} /><h3>Audit evidence</h3><p>Security-relevant activity is recorded in an append-only HMAC-linked audit chain.</p></article>
+          </div>
+        </section>
+
+        <section className="landing-section feature-section" id="features">
+          <div className="section-lead"><span className="landing-eyebrow">THE VAULT, NOT JUST THE FILE LIST</span><h2>Made for careful document work.</h2></div>
+          <div className="feature-grid">
+            {[
+              [FileText, "Secure document storage", "Validated uploads, encrypted file storage, and protected downloads."],
+              [Share2, "Controlled sharing", "Share with registered people—document by document."],
+              [ShieldCheck, "Read and write permissions", "Give access appropriate to the work, without widening it further."],
+              [Activity, "Activity and audit trails", "Review important document and permission activity."],
+              [CheckCircle2, "Integrity verification", "Authenticated encryption and content checks protect downloaded files."],
+              [Folder, "Workspace management", "Keep owned and shared documents clear, separate, and actionable."],
+            ].map(([Icon, title, description]) => {
+              const FeatureIcon = Icon as typeof FileText;
+              return <article className="feature-card" key={title as string}><span><FeatureIcon size={22} /></span><h3>{title as string}</h3><p>{description as string}</p></article>;
+            })}
+          </div>
+        </section>
+
+        <section className="landing-section how-section" id="how-it-works">
+          <div className="section-lead"><span className="landing-eyebrow">A CLEARER WAY TO PROTECT WORK</span><h2>Security in three deliberate steps.</h2></div>
+          <div className="how-steps"><article><span>01</span><h3>Upload and protect</h3><p>Submit a supported document. TrustVault validates, encrypts, and records its arrival.</p></article><article><span>02</span><h3>Decide access</h3><p>Grant a named person read or write permission. Nothing is inherited by accident.</p></article><article><span>03</span><h3>Review the evidence</h3><p>Inspect permission changes and security activity through the audit trail.</p></article></div>
+        </section>
+
+        <section className="landing-section philosophy-section" id="about">
+          <div className="philosophy-graphic"><div className="graphic-user">You</div><div className="graphic-line line-one" /><div className="graphic-line line-two" /><div className="graphic-doc"><FileText size={25} /><span>Encrypted<br />document</span></div><div className="graphic-audit"><Activity size={19} /><span>Audited decision</span></div></div>
+          <div className="philosophy-copy"><span className="landing-eyebrow">SECURITY-FIRST BY DEFAULT</span><h2>Every access decision should stand up to a question.</h2><p>TrustVault is designed around an uncomplicated rule: access is explicitly authorized by the server at the moment it is requested. Important actions leave traceable evidence without exposing document contents in the audit log.</p><a href="#get-started">Start with a protected workspace <ArrowUpRight size={16} /></a></div>
+        </section>
+
+        <section className="landing-cta"><div><span className="landing-eyebrow">YOUR PRIVATE DOCUMENT SPACE</span><h2>Take Control of Your Documents.</h2><p>Secure your files. Control access. Trust every decision.</p></div><button className="landing-cta-button" onClick={() => { setAuthMode("register"); document.getElementById("get-started")?.scrollIntoView({ behavior: "smooth" }); }}>Get Started <ArrowUpRight size={18} /></button></section>
+
+        <section className="auth-card landing-auth" id="get-started">
           <div className="auth-brand">
             <div className="brand-mark">
               <ShieldCheck size={26} />
@@ -698,11 +819,19 @@ function App() {
           <Shield size={15} />
           A calmer, safer place for what matters.
         </div>
+        <footer className="landing-footer">
+          <div><div className="landing-brand"><span className="brand-mark"><ShieldCheck size={19} /></span><span>TrustVault<span>.</span></span></div><p>The explainable zero-trust document vault.</p></div>
+          <div className="footer-links"><a href="#features">Features</a><a href="#security">Security</a><a href="#how-it-works">How It Works</a><button onClick={() => { setAuthMode("login"); document.getElementById("get-started")?.scrollIntoView({ behavior: "smooth" }); }}>Sign In</button></div>
+          <small>© {new Date().getFullYear()} TrustVault · Privacy by design</small>
+        </footer>
       </main>
     );
   }
 
-  const selectedNavExists = navigation.some(
+  const visibleNavigation = user.role === "ADMIN"
+    ? [...navigation, { label: "Admin Dashboard", icon: ShieldCheck }]
+    : navigation;
+  const selectedNavExists = visibleNavigation.some(
     (item) => item.label === activeNav,
   );
   const isOverview = activeNav === "Overview";
@@ -749,7 +878,7 @@ function App() {
 
         <div className="nav-label">YOUR SPACE</div>
         <nav className="navigation">
-          {navigation.map(({ label, icon: Icon }) => (
+          {visibleNavigation.map(({ label, icon: Icon }) => (
             <button
               key={label}
               className={`nav-item ${activeNav === label ? "active" : ""}`}
@@ -1069,6 +1198,11 @@ function App() {
                         </button>
                       )}
                     </label>
+                    <input className="search-box compact-filter" aria-label="Filter by owner" placeholder="Owner email" value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)} />
+                    <select className="compact-filter" aria-label="Filter by category" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
+                      <option value="">All categories</option>
+                      {[...new Set(documents.map((doc) => doc.category))].sort().map((category) => <option key={category} value={category}>{category}</option>)}
+                    </select>
                     <button
                       className="filter-button"
                       onClick={() => showMessage("Showing all supported files.")}
@@ -1111,6 +1245,7 @@ function App() {
                         <tr>
                           <th>NAME</th>
                           <th>FILE TYPE</th>
+                          <th>CATEGORY</th>
                           <th>SIZE</th>
                           <th>DATE ADDED</th>
                           <th aria-label="Actions" />
@@ -1140,6 +1275,7 @@ function App() {
                               <td>
                                 <span className="file-type-pill">{kind.label}</span>
                               </td>
+                              <td className="table-muted">{doc.isOwner ? <select className="category-select" aria-label={`Category for ${doc.name}`} value={doc.category} onChange={(event) => void handleCategoryChange(doc, event.target.value)}><option>Uncategorized</option><option>Contracts</option><option>Finance</option><option>HR</option><option>Operations</option><option>Personal</option></select> : doc.category}</td>
                               <td className="table-muted">{formatSize(doc.size)}</td>
                               <td className="table-muted">
                                 {formatDate(doc.createdAt)}
@@ -1264,6 +1400,8 @@ function App() {
                   mime: "",
                   size: 0,
                   createdAt: doc.sharedAt,
+                  category: "Shared",
+                  ownerEmail: doc.ownerEmail,
                 })
               }
             >
@@ -1412,6 +1550,16 @@ function App() {
                   </div>
                 )}
               </div>
+            </section>
+          )}
+
+          {activeNav === "Admin Dashboard" && user.role === "ADMIN" && (
+            <section className="share-panel audit-panel">
+              <div className="section-heading"><div><span className="section-eyebrow">ADMINISTRATION</span><h1>Security dashboard</h1><p>Global activity and current access posture.</p></div><button className="secondary-button" onClick={() => void loadAdminOverview()} disabled={loadingAdmin}>{loadingAdmin ? "Refreshing…" : "Refresh"}</button></div>
+              {adminOverview && <>
+                <div className="stats-grid admin-stats"><article className="stat-card"><span>ACTIVE USERS</span><strong>{adminOverview.metrics.activeUsers}</strong></article><article className="stat-card"><span>ACTIVE DOCUMENTS</span><strong>{adminOverview.metrics.activeDocuments}</strong></article><article className="stat-card"><span>ACTIVE GRANTS</span><strong>{adminOverview.metrics.activeGrants}</strong></article><article className="stat-card"><span>DENIED · 24H</span><strong>{adminOverview.metrics.deniedLast24Hours}</strong></article></div>
+                <div className="audit-events"><div className="audit-events-heading"><div><h2>Recent security activity</h2><p>Newest events across the workspace.</p></div></div><div className="audit-table-wrap"><table className="audit-table"><thead><tr><th>EVENT</th><th>ENTITY</th><th>DATE &amp; TIME</th><th>DETAILS</th></tr></thead><tbody>{adminOverview.events.map((event) => <tr key={event.id}><td><strong>{event.eventType.replace(/_/g, " ")}</strong></td><td>{event.entityType}</td><td>{new Date(event.createdAt).toLocaleString()}</td><td>{Object.entries(event.metadata).map(([key,value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`).join(" · ") || "—"}</td></tr>)}</tbody></table></div></div>
+              </>}
             </section>
           )}
 

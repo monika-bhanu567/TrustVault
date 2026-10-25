@@ -18,6 +18,10 @@ import { PostgresAuditService } from "./audit/postgres-audit-service.js";
 const COOKIE_NAME = "trustvault_session";
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
+function crossSiteCookiesEnabled(): boolean {
+  return process.env.NODE_ENV === "production" && Boolean(process.env.FRONTEND_ORIGIN);
+}
+
 export function buildApp(sessionStore?: SessionStore) {
   const app = Fastify({
     logger: true,
@@ -28,6 +32,31 @@ export function buildApp(sessionStore?: SessionStore) {
   const auditService = new PostgresAuditService();
 
   app.register(cookie);
+
+  // The API only permits the explicitly configured deployed frontend to make
+  // credentialed cross-origin requests. Local Vite development uses its proxy.
+  app.addHook("onRequest", async (request, reply) => {
+    const allowedOrigin = process.env.FRONTEND_ORIGIN;
+    const origin = request.headers.origin;
+
+    if (origin && allowedOrigin && origin === allowedOrigin) {
+      reply
+        .header("Access-Control-Allow-Origin", allowedOrigin)
+        .header("Access-Control-Allow-Credentials", "true")
+        .header("Vary", "Origin");
+    }
+
+    if (request.method === "OPTIONS") {
+      if (!origin || !allowedOrigin || origin !== allowedOrigin) {
+        return reply.code(403).send({ error: "Origin not allowed" });
+      }
+      return reply
+        .header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
+        .header("Access-Control-Allow-Headers", "Content-Type")
+        .code(204)
+        .send();
+    }
+  });
 
   app.register(multipart, {
     limits: {
@@ -41,6 +70,22 @@ export function buildApp(sessionStore?: SessionStore) {
     status: "ok",
     service: "trustvault-api",
   }));
+
+  app.get("/ready", async (_request, reply) => {
+    const encryptionKey = process.env.VAULT_ENCRYPTION_KEY;
+    const auditKey = process.env.AUDIT_HMAC_KEY;
+    if (!encryptionKey || !/^[0-9a-fA-F]{64}$/.test(encryptionKey) || !auditKey || auditKey.length < 32) {
+      return reply.code(503).send({ status: "not_ready" });
+    }
+
+    try {
+      await pool.query("SELECT 1");
+      return { status: "ready" };
+    } catch (error) {
+      app.log.error({ err: error }, "Readiness database check failed");
+      return reply.code(503).send({ status: "not_ready" });
+    }
+  });
 
   app.post<{
     Body: { email: string; password: string };
@@ -94,7 +139,7 @@ export function buildApp(sessionStore?: SessionStore) {
         .setCookie(COOKIE_NAME, result.token, {
           httpOnly: true,
           secure: process.env.NODE_ENV === "production",
-          sameSite: "strict",
+          sameSite: crossSiteCookiesEnabled() ? "none" : "strict",
           path: "/",
           expires: result.expiresAt,
         })
@@ -122,7 +167,7 @@ export function buildApp(sessionStore?: SessionStore) {
         .clearCookie(COOKIE_NAME, {
           httpOnly: true,
           secure: process.env.NODE_ENV === "production",
-          sameSite: "strict",
+          sameSite: crossSiteCookiesEnabled() ? "none" : "strict",
           path: "/",
         })
         .code(204)
@@ -179,6 +224,28 @@ export function buildApp(sessionStore?: SessionStore) {
       }
 
       return { user };
+    });
+
+    app.get("/admin/overview", async (request, reply) => {
+      const auth = await guard.validate(request.cookies[COOKIE_NAME]);
+      if (!auth.valid) return reply.code(401).send({ error: "Unauthorized" });
+      const admin = await pool.query<{ role: string }>(
+        "SELECT role FROM users WHERE id = $1 AND is_active = TRUE LIMIT 1", [auth.user.id]
+      );
+      if (admin.rows[0]?.role !== "ADMIN") return reply.code(403).send({ error: "Administrator access required" });
+      const [users, documents, activeGrants, denied, events] = await Promise.all([
+        pool.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM users WHERE is_active = TRUE"),
+        pool.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM documents WHERE status = 'ACTIVE'"),
+        pool.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM document_grants WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())"),
+        pool.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM audit_events WHERE event_type = 'DOCUMENT_ACCESS_DENIED' AND created_at > NOW() - INTERVAL '24 hours'"),
+        pool.query<{ id: string; event_type: string; entity_type: string; created_at: Date; metadata: Record<string, unknown> }>(
+          "SELECT id::text, event_type, entity_type, created_at, metadata FROM audit_events ORDER BY id DESC LIMIT 25"
+        )
+      ]);
+      return {
+        metrics: { activeUsers: Number(users.rows[0].count), activeDocuments: Number(documents.rows[0].count), activeGrants: Number(activeGrants.rows[0].count), deniedLast24Hours: Number(denied.rows[0].count) },
+        events: events.rows.map((event) => ({ id: event.id, eventType: event.event_type, entityType: event.entity_type, createdAt: event.created_at.toISOString(), metadata: event.metadata }))
+      };
     });
 
     // Return recent audit events without exposing signatures or secrets.
