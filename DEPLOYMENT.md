@@ -4,6 +4,8 @@
 
 Build the backend container from `backend/` and deploy it to a persistent Node/Docker host. Configure a health check at `/ready`.
 
+The repository includes `render.yaml` for a Render Blueprint deployment. Connect the GitHub repository in Render, approve the Blueprint, and enter each `sync: false` environment variable only in Render's protected environment-variable UI. The health check must be green before deploying the frontend.
+
 Required backend environment variables: `NODE_ENV`, `PORT`, `DATABASE_URL`, `FRONTEND_ORIGIN`, `VAULT_ENCRYPTION_KEY`, `AUDIT_HMAC_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_STORAGE_BUCKET`.
 
 The service must run with `NODE_ENV=production`; it then binds to `0.0.0.0` by default. Set `FRONTEND_ORIGIN` to the exact Vercel URL. Do not set storage credentials in Vercel.
@@ -27,3 +29,14 @@ node scripts/migrate-encrypted-storage.mjs
 ```
 
 The command safely retries existing objects and verifies decryption/integrity. It reports missing legacy ciphertext without modifying records. Only after review, quarantine missing records with `node scripts/migrate-encrypted-storage.mjs --quarantine-missing`.
+
+## Security regression commands
+
+Run the unit suite with `npm test` in `backend`. The route-level integration scripts require an isolated local PostgreSQL database named `trustvault_test` with migrations applied; they refuse to run against another database:
+
+```text
+npm run test:uploads
+npm run test:grants
+```
+
+The grant workflow proves that a direct API download works only while the active named grant exists, disappears after revocation, and requires a new grant before access returns.

@@ -105,4 +105,32 @@ describe("TrustVault API", () => {
       userId: "user-1"
     });
   });
+
+  it("allows credentialed preflight only from the configured frontend", async () => {
+    const originalOrigin = process.env.FRONTEND_ORIGIN;
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.FRONTEND_ORIGIN = "https://trustvault.example";
+    process.env.NODE_ENV = "production";
+    try {
+      app = buildApp(createSessionStore());
+      const accepted = await app.inject({
+        method: "OPTIONS",
+        url: "/documents",
+        headers: { origin: "https://trustvault.example" }
+      });
+      const rejected = await app.inject({
+        method: "OPTIONS",
+        url: "/documents",
+        headers: { origin: "https://evil.example" }
+      });
+      expect(accepted.statusCode).toBe(204);
+      expect(accepted.headers["access-control-allow-origin"]).toBe("https://trustvault.example");
+      expect(rejected.statusCode).toBe(403);
+    } finally {
+      if (originalOrigin === undefined) delete process.env.FRONTEND_ORIGIN;
+      else process.env.FRONTEND_ORIGIN = originalOrigin;
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
 });
